@@ -1,0 +1,43 @@
+# ──────────────────────────────────────────────
+# Gaolaif — Local Infrastructure (not for code)
+# ──────────────────────────────────────────────
+# Spawns PostgreSQL + Redis for local dev.
+# Code processing NEVER leaves the host.
+# ──────────────────────────────────────────────
+
+version: "3.9"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: gaolaif-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: gaolaif
+      POSTGRES_USER: gaolaif
+      POSTGRES_PASSWORD: gaolaif_local_only
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./apps/agent-core/db/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gaolaif"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: gaolaif-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:

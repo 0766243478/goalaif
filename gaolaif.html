@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>gaolaif · simulation cockpit</title>
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;background:#0d1117;color:#e6edf3;font-family:'SF Mono','JetBrains Mono','Fira Code','Cascadia Code','Consolas',monospace;font-size:13px;line-height:1.5;-webkit-font-smoothing:antialiased;overflow:hidden}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:#0d1117}
+::-webkit-scrollbar-thumb{background:#30363d;border-radius:0}
+::-webkit-scrollbar-thumb:hover{background:#484f58}
+::selection{background:rgba(240,136,62,.35);color:#e6edf3}
+
+:root{
+  --bg0:#0d1117;
+  --bg1:#161b22;
+  --bg2:#1c2128;
+  --bg3:#21262d;
+  --bd:#30363d;
+  --bd-hover:#484f58;
+  --tx:#e6edf3;
+  --tx2:#8b949e;
+  --tx3:#6e7681;
+  --accent:#f0883e;
+  --accent-hover:#f9a34e;
+  --green:#3fb950;
+  --red:#f85149;
+  --yellow:#d29922;
+  --blue:#58a6ff;
+  --purple:#bc8cff;
+  --cyan:#39d2c0;
+  --orange:#f0883e;
+}
+
+#app{display:flex;flex-direction:column;height:100vh}
+
+.topbar{display:flex;align-items:center;gap:16px;padding:0 20px;height:44px;border-bottom:1px solid var(--bd);background:var(--bg1);flex-shrink:0}
+.topbar-brand{font-size:15px;font-weight:600;letter-spacing:-.5px;color:var(--accent)}
+.topbar-sub{font-size:11px;color:var(--tx3);margin-right:auto;letter-spacing:.3px;text-transform:uppercase}
+.topbar-status{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--tx2);text-transform:uppercase;letter-spacing:.5px}
+.status-dot{width:7px;height:7px;border-radius:0;background:var(--green);display:inline-block}
+.status-dot.busy{background:var(--yellow);animation:pulse 1s infinite}
+.status-dot.error{background:var(--red)}
+.status-dot.idle{background:var(--tx3)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+.dashboard{display:grid;grid-template-columns:1fr 1.15fr 1fr;flex:1;overflow:hidden;gap:0}
+.panel{display:flex;flex-direction:column;border-right:1px solid var(--bd);overflow:hidden;background:var(--bg0)}
+.panel:last-child{border-right:none}
+.panel-header{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-bottom:1px solid var(--bd);background:var(--bg1);flex-shrink:0}
+.panel-title{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;color:var(--tx2)}
+.panel-badge{font-size:10px;padding:1px 6px;border:1px solid var(--bd);color:var(--tx3);text-transform:uppercase;letter-spacing:.5px}
+.panel-body{padding:16px;overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:16px}
+
+.input-group{display:flex;align-items:stretch;border:1px solid var(--bd);background:var(--bg1)}
+.input-group:focus-within{border-color:var(--accent)}
+.input-prefix{display:flex;align-items:center;padding:0 10px;font-size:11px;color:var(--tx3);background:var(--bg2);border-right:1px solid var(--bd);text-transform:uppercase;letter-spacing:.5px}
+.input-group input{flex:1;background:transparent;border:none;outline:none;color:var(--tx);font-family:inherit;font-size:13px;padding:8px 10px}
+.input-group input::placeholder{color:var(--tx3);font-size:11px}
+
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 14px;font-family:inherit;font-size:11px;font-weight:600;border:1px solid;cursor:pointer;text-transform:uppercase;letter-spacing:.6px;transition:all .12s;background:transparent}
+.btn-primary{border-color:var(--accent);color:var(--accent)}
+.btn-primary:hover{background:var(--accent);color:var(--bg0)}
+.btn-primary:disabled{opacity:.35;cursor:not-allowed}
+.btn-primary:disabled:hover{background:transparent;color:var(--accent)}
+.btn-execute{width:100%;padding:10px;background:var(--accent);color:var(--bg0);border-color:var(--accent);font-size:12px}
+.btn-execute:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
+.btn-execute:disabled{opacity:.35;cursor:not-allowed}
+.btn-execute:disabled:hover{background:var(--accent);border-color:var(--accent)}
+.btn-clear{background:transparent;border:1px solid var(--bd);color:var(--tx3);font-family:inherit;font-size:10px;padding:3px 8px;cursor:pointer;text-transform:uppercase;letter-spacing:.5px}
+.btn-clear:hover{border-color:var(--bd-hover);color:var(--tx2)}
+
+.deps-section{margin-top:4px}
+.deps-section-title{font-size:10px;text-transform:uppercase;letter-spacing:.8px;color:var(--tx3);margin-bottom:6px;display:flex;align-items:center;gap:6px}
+.deps-section-title .count{color:var(--tx2)}
+.deps-item{display:flex;align-items:center;gap:8px;padding:5px 8px;font-size:12px;border-left:2px solid var(--bd);margin-bottom:2px;font-family:inherit}
+.deps-item .deps-icon{font-size:11px;width:16px;text-align:center}
+.deps-item .deps-addr{color:var(--tx2);font-size:11px}
+.deps-item .deps-label{color:var(--tx)}
+.deps-scanning{display:flex;align-items:center;gap:8px;padding:8px;font-size:11px;color:var(--tx3)}
+.deps-scanning .scanner{animation:scan 1.2s steps(4) infinite;width:12px;text-align:center}
+@keyframes scan{0%,100%{content:'|';opacity:1}25%{opacity:.6}50%{opacity:.3}75%{opacity:.6}}
+
+.adv-cards{display:flex;flex-direction:column;gap:8px}
+.adv-card{border:1px solid var(--bd);background:var(--bg1);padding:12px 14px;transition:border-color .15s}
+.adv-card.active{border-color:var(--accent)}
+.adv-card-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
+.adv-card-name{font-size:12px;font-weight:600;letter-spacing:.2px}
+.adv-card-severity{font-size:9px;padding:1px 5px;border:1px solid;text-transform:uppercase;letter-spacing:.6px}
+.adv-card-severity.high{border-color:var(--red);color:var(--red)}
+.adv-card-severity.medium{border-color:var(--yellow);color:var(--yellow)}
+.adv-card-severity.low{border-color:var(--blue);color:var(--blue)}
+.adv-card-desc{font-size:11px;color:var(--tx2);line-height:1.4}
+.adv-card-affected{margin-top:6px;display:flex;flex-wrap:wrap;gap:4px}
+.adv-card-affected span{font-size:9px;padding:1px 5px;background:var(--bg2);color:var(--tx3);border:1px solid var(--bd);letter-spacing:.3px}
+
+.toggle{position:relative;width:32px;height:18px;cursor:pointer;flex-shrink:0}
+.toggle input{opacity:0;width:0;height:0;position:absolute}
+.toggle-slider{position:absolute;inset:0;background:var(--bg3);border:1px solid var(--bd);transition:all .15s}
+.toggle-slider::after{content:'';position:absolute;width:12px;height:12px;left:2px;bottom:2px;background:var(--tx3);transition:all .15s}
+.toggle input:checked+.toggle-slider{background:var(--accent);border-color:var(--accent)}
+.toggle input:checked+.toggle-slider::after{background:var(--bg0);left:16px}
+
+.report-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:8px;text-align:center;padding:40px 20px}
+.report-empty-icon{font-size:24px;color:var(--tx3)}
+.report-empty-text{font-size:11px;color:var(--tx3);max-width:240px;line-height:1.5}
+.report-empty-hint{font-size:10px;color:var(--tx3);opacity:.6}
+
+.report-summary{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--bd);border:1px solid var(--bd)}
+.report-summary>div{padding:8px;text-align:center;background:var(--bg1)}
+.report-summary .sum-num{font-size:16px;font-weight:700;letter-spacing:-.5px}
+.report-summary .sum-label{font-size:9px;text-transform:uppercase;letter-spacing:.6px;color:var(--tx3);margin-top:2px}
+.sum-total .sum-num{color:var(--tx2)}
+.sum-passed .sum-num{color:var(--green)}
+.sum-failed .sum-num{color:var(--red)}
+
+.invariant-list{display:flex;flex-direction:column;gap:1px;background:var(--bd);border:1px solid var(--bd);margin-top:0}
+.invariant-item{display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--bg1);font-size:12px}
+.invariant-item .inv-badge{width:14px;height:14px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;flex-shrink:0}
+.inv-pass .inv-badge{background:var(--green);color:var(--bg0)}
+.inv-fail .inv-badge{background:var(--red);color:var(--bg0)}
+.inv-pending .inv-badge{background:var(--bg3);color:var(--tx3)}
+.inv-item-name{flex:1}
+.inv-item-cat{font-size:9px;padding:1px 5px;border:1px solid var(--bd);color:var(--tx3);text-transform:uppercase;letter-spacing:.4px}
+.inv-item-icon{font-size:11px;width:12px;text-align:center}
+.inv-checking{animation:scan 1.2s steps(4) infinite}
+
+.invariant-item.entering{animation:slideIn .3s ease-out}
+@keyframes slideIn{from{opacity:0;transform:translateX(-6px)}to{opacity:1;transform:translateX(0)}}
+
+.terminal{height:160px;border-top:1px solid var(--bd);display:flex;flex-direction:column;flex-shrink:0;background:var(--bg0)}
+.terminal-header{display:flex;align-items:center;justify-content:space-between;padding:4px 16px;background:var(--bg1);border-bottom:1px solid var(--bd);flex-shrink:0}
+.terminal-header span{font-size:10px;text-transform:uppercase;letter-spacing:.8px;color:var(--tx3)}
+.terminal-body{padding:8px 16px;overflow-y:auto;flex:1;font-size:11px;line-height:1.6;font-family:inherit}
+.term-line{white-space:pre-wrap;word-break:break-all;opacity:0;animation:fadeIn .15s forwards}
+.term-line.info{color:var(--tx2)}
+.term-line.ok{color:var(--green)}
+.term-line.err{color:var(--red)}
+.term-line.warn{color:var(--yellow)}
+.term-line.accent{color:var(--accent)}
+.term-line.muted{color:var(--tx3)}
+.term-line .ts{color:var(--tx3);margin-right:10px}
+@keyframes fadeIn{to{opacity:1}}
+
+.empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:6px;padding:30px;text-align:center}
+.empty-state .es-icon{font-size:20px;color:var(--tx3)}
+.empty-state .es-text{font-size:11px;color:var(--tx3)}
+
+@media(max-width:900px){
+  .dashboard{grid-template-columns:1fr;grid-template-rows:auto auto auto;overflow-y:auto}
+  .panel{border-right:none;border-bottom:1px solid var(--bd)}
+  .terminal{height:120px}
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <div class="topbar-brand">gaolaif</div>
+    <div class="topbar-sub">simulation cockpit · v0.1.0</div>
+    <div class="topbar-status">
+      <span class="status-dot idle" id="statusDot"></span>
+      <span class="status-text" id="statusText">ready</span>
+    </div>
+  </header>
+
+  <main class="dashboard">
+    <!-- Panel: Target -->
+    <section class="panel panel-target">
+      <div class="panel-header">
+        <span class="panel-title">target contract</span>
+        <span class="panel-badge">input</span>
+      </div>
+      <div class="panel-body">
+        <div class="input-group">
+          <span class="input-prefix">addr</span>
+          <input type="text" id="contractInput" placeholder="0x... or ./path/to/Contract.sol" spellcheck="false" autocomplete="off">
+        </div>
+        <button class="btn btn-primary" id="analyzeBtn">identify dependencies</button>
+        <div id="depsOutput"></div>
+      </div>
+    </section>
+
+    <!-- Panel: Adversarial -->
+    <section class="panel panel-adversarial">
+      <div class="panel-header">
+        <span class="panel-title">adversarial mode</span>
+        <span class="panel-badge">controls</span>
+      </div>
+      <div class="panel-body">
+        <div class="adv-cards" id="advCards"></div>
+        <button class="btn btn-execute" id="simulateBtn" disabled>execute simulation</button>
+      </div>
+    </section>
+
+    <!-- Panel: Report -->
+    <section class="panel panel-report">
+      <div class="panel-header">
+        <span class="panel-title">invariant integrity report</span>
+        <span class="panel-badge">output</span>
+      </div>
+      <div class="panel-body" id="reportBody">
+        <div class="report-empty">
+          <div class="report-empty-icon">◇</div>
+          <div class="report-empty-text">identify dependencies and toggle adversarial modes, then execute simulation</div>
+          <div class="report-empty-hint">awaiting input</div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Terminal -->
+  <div class="terminal">
+    <div class="terminal-header">
+      <span>&gt;_ console</span>
+      <button class="btn-clear" id="clearTermBtn">clear</button>
+    </div>
+    <div class="terminal-body" id="termBody"></div>
+  </div>
+</div>
+
+<script>
+const STATE = {
+  analyzing: false,
+  analyzed: false,
+  deps: null,
+  advModes: {},
+  simulating: false,
+  simulated: false,
+  results: null,
+};
+
+const ADVERSARIAL_MODES = [
+  { id:'oracleStaleness', name:'Oracle Staleness', desc:'Price feed returns data beyond staleness threshold', severity:'high', breaks:['price_freshness','collateral_solvency','liquidation_accuracy'] },
+  { id:'sequencerDowntime', name:'Sequencer Downtime', desc:'L2 sequencer stops processing new transactions', severity:'high', breaks:['l2_sequencer_liveness','cross_domain_consistency','message_delivery'] },
+  { id:'l2Reorg', name:'L2 Reorg', desc:'Chain reorganization causes state rollback', severity:'high', breaks:['state_consistency','event_emission_integrity','deposit_finality'] },
+  { id:'flashLoanManipulation', name:'Flash Loan Manipulation', desc:'Large flash loan distorts pool pricing', severity:'medium', breaks:['price_stability','collateral_solvency','liquidation_accuracy','arbitrage_consistency'] },
+];
+
+const ALL_INVARIANTS = [
+  { id:'price_freshness', name:'Price Freshness', cat:'oracle', desc:'Oracle price timestamps within configured tolerance' },
+  { id:'collateral_solvency', name:'Collateral Solvency', cat:'financial', desc:'Collateral value >= debt for all positions' },
+  { id:'liquidation_accuracy', name:'Liquidation Accuracy', cat:'financial', desc:'Liquidations execute at correct thresholds' },
+  { id:'l2_sequencer_liveness', name:'L2 Sequencer Liveness', cat:'l2', desc:'Sequencer processing within expected latency' },
+  { id:'cross_domain_consistency', name:'Cross-Domain Consistency', cat:'l2', desc:'L1 and L2 state roots are consistent' },
+  { id:'message_delivery', name:'Message Delivery', cat:'l2', desc:'Cross-domain messages delivered and executed' },
+  { id:'state_consistency', name:'State Consistency', cat:'state', desc:'World state root matches computed hash' },
+  { id:'event_emission_integrity', name:'Event Emission Integrity', cat:'state', desc:'All state-modifying events emitted correctly' },
+  { id:'deposit_finality', name:'Deposit Finality', cat:'l2', desc:'L1 deposits are finalized on L2' },
+  { id:'price_stability', name:'Price Stability', cat:'oracle', desc:'TWAP price within deviation bounds' },
+  { id:'arbitrage_consistency', name:'Arbitrage Consistency', cat:'financial', desc:'No persistent arbitrage > threshold' },
+  { id:'total_supply_consistency', name:'Total Supply Consistency', cat:'state', desc:'Token total supply matches summed balances' },
+];
+
+ADVERSARIAL_MODES.forEach(m => { STATE.advModes[m.id] = false; });
+
+// DOM refs
+const $ = id => document.getElementById(id);
+const contractInput = $('contractInput');
+const analyzeBtn = $('analyzeBtn');
+const depsOutput = $('depsOutput');
+const advCards = $('advCards');
+const simulateBtn = $('simulateBtn');
+const reportBody = $('reportBody');
+const termBody = $('termBody');
+const statusDot = $('statusDot');
+const statusText = $('statusText');
+const clearTermBtn = $('clearTermBtn');
+
+function setStatus(mode, text) {
+  statusDot.className = 'status-dot ' + mode;
+  statusText.textContent = text;
+}
+
+// Terminal
+function termLog(msg, type='info') {
+  const ts = new Date().toLocaleTimeString('en-US', {hour12:false});
+  const line = document.createElement('div');
+  line.className = 'term-line ' + type;
+  line.innerHTML = '<span class="ts">['+ts+']</span> ' + msg;
+  termBody.appendChild(line);
+  termBody.scrollTop = termBody.scrollHeight;
+}
+clearTermBtn.addEventListener('click', () => { termBody.innerHTML = ''; });
+termLog('gaolaif::cockpit initializing', 'muted');
+termLog('gaolaif::cockpit ready — awaiting user input', 'muted');
+
+// Render adversarial cards
+function renderAdvCards() {
+  advCards.innerHTML = '';
+  ADVERSARIAL_MODES.forEach(m => {
+    const on = STATE.advModes[m.id];
+    const card = document.createElement('div');
+    card.className = 'adv-card' + (on ? ' active' : '');
+    card.innerHTML = `
+      <div class="adv-card-header">
+        <label class="adv-card-name">${m.name}</label>
+        <label class="toggle">
+          <input type="checkbox" ${on?'checked':''} data-id="${m.id}">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="adv-card-severity ${m.severity}">${m.severity}</div>
+      <div class="adv-card-desc">${m.desc}</div>
+      <div class="adv-card-affected">${m.breaks.map(i => '<span>'+i.replace(/_/g,' ')+'</span>').join('')}</div>
+    `;
+    card.querySelector('input').addEventListener('change', e => {
+      STATE.advModes[m.id] = e.target.checked;
+      card.classList.toggle('active', e.target.checked);
+      updateSimulateBtn();
+    });
+    advCards.appendChild(card);
+  });
+}
+renderAdvCards();
+
+function updateSimulateBtn() {
+  const anyOn = Object.values(STATE.advModes).some(v => v);
+  simulateBtn.disabled = !anyOn || STATE.simulating || !STATE.analyzed;
+}
+
+// Dependency scanning
+function generateFakeDeps() {
+  const r = () => '0x' + Array.from({length:40},()=>'0123456789abcdef'[Math.floor(Math.random()*16)]).join('');
+  return {
+    oracles: [
+      { addr:r(), name:'Primary Price Feed' },
+      { addr:r(), name:'TWAP Oracle' },
+      { addr:r(), name:'Circuit Breaker Feed' },
+    ],
+    l2: [
+      { addr:'0x4200000000000000000000000000000000000007', name:'L2CrossDomainMessenger' },
+      { addr:'0x4200000000000000000000000000000000000015', name:'L2StandardBridge' },
+    ],
+    externals: [
+      { addr:r(), name:'DEX Pool (USDC/ETH)' },
+      { addr:r(), name:'Lending Pool' },
+    ]
+  };
+}
+
+async function runAnalysis(input) {
+  STATE.analyzing = true;
+  STATE.analyzed = false;
+  STATE.deps = null;
+  STATE.simulated = false;
+  STATE.results = null;
+  reportBody.innerHTML = '<div class="report-empty"><div class="report-empty-icon">◇</div><div class="report-empty-text">identify dependencies and toggle adversarial modes, then execute simulation</div><div class="report-empty-hint">awaiting input</div></div>';
+  analyzeBtn.disabled = true;
+  setStatus('busy', 'scanning');
+  depsOutput.innerHTML = '<div class="deps-scanning"><span class="scanner">◐</span> scanning bytecode & extracting external calls...</div>';
+  termLog('scanning target contract: ' + input, 'info');
+  await sleep(600);
+  depsOutput.innerHTML += '<div class="deps-scanning"><span class="scanner">◑</span> identifying oracle price feeds...</div>';
+  await sleep(500);
+  depsOutput.innerHTML += '<div class="deps-scanning"><span class="scanner">◒</span> resolving L2 hook addresses...</div>';
+  await sleep(500);
+  depsOutput.innerHTML += '<div class="deps-scanning"><span class="scanner">◓</span> mapping external protocol dependencies...</div>';
+  await sleep(400);
+  
+  const deps = generateFakeDeps();
+  STATE.deps = deps;
+  STATE.analyzed = true;
+  STATE.analyzing = false;
+  analyzeBtn.disabled = false;
+  setStatus('idle', 'ready');
+  updateSimulateBtn();
+  
+  renderDeps(deps);
+  termLog('dependency analysis complete', 'ok');
+  termLog('found ' + deps.oracles.length + ' oracle dependencies', 'accent');
+  termLog('found ' + deps.l2.length + ' L2 hooks', 'accent');
+  termLog('found ' + deps.externals.length + ' external contract calls', 'accent');
+}
+
+function renderDeps(deps) {
+  let html = '';
+  const sections = [
+    { key:'oracles', label:'Oracles', icon:'◎', color:'var(--yellow)' },
+    { key:'l2', label:'L2 Hooks', icon:'⚡', color:'var(--blue)' },
+    { key:'externals', label:'External Calls', icon:'⇄', color:'var(--purple)' },
+  ];
+  sections.forEach(s => {
+    const items = deps[s.key];
+    if (!items || !items.length) return;
+    html += '<div class="deps-section"><div class="deps-section-title">' + s.icon + ' ' + s.label + ' <span class="count">(' + items.length + ')</span></div>';
+    items.forEach(item => {
+      const addr = item.addr.slice(0,10) + '...' + item.addr.slice(-6);
+      html += '<div class="deps-item"><span class="deps-icon" style="color:'+s.color+'">' + s.icon + '</span><span class="deps-label">' + item.name + '</span><span class="deps-addr">' + addr + '</span></div>';
+    });
+    html += '</div>';
+  });
+  depsOutput.innerHTML = html;
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+analyzeBtn.addEventListener('click', () => {
+  const val = contractInput.value.trim();
+  if (!val) {
+    termLog('no contract address provided — running demo analysis', 'warn');
+    runAnalysis('0xBC4CA0EdA7647A8aB7C2061c2E118A18a936f13D');
+    return;
+  }
+  runAnalysis(val);
+});
+
+contractInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') analyzeBtn.click();
+});
+
+// Simulation
+async function runSimulation() {
+  if (STATE.simulating) return;
+  STATE.simulating = true;
+  STATE.simulated = false;
+  STATE.results = null;
+  simulateBtn.disabled = true;
+  setStatus('busy', 'simulating');
+  termLog('=== SIMULATION EXECUTION START ===', 'accent');
+  
+  const activeModes = ADVERSARIAL_MODES.filter(m => STATE.advModes[m.id]);
+  const brokenInvariantIds = new Set();
+  activeModes.forEach(m => m.breaks.forEach(b => brokenInvariantIds.add(b)));
+  
+  termLog('adversarial conditions: ' + activeModes.map(m => m.name).join(', '), 'warn');
+  termLog('applying ' + activeModes.length + ' failure modes to system state', 'info');
+  
+  // Build report skeleton - all invariants start as pending
+  const invStates = ALL_INVARIANTS.map(inv => ({
+    ...inv,
+    status: 'pending',
+    broken: false,
+  }));
+  
+  renderReportSkeleton(invStates);
+  await sleep(400);
+  
+  // Check each invariant
+  for (let i = 0; i < invStates.length; i++) {
+    const inv = invStates[i];
+    inv.status = 'checking';
+    renderReportSkeleton(invStates);
+    
+    const isBroken = brokenInvariantIds.has(inv.id);
+    const checkTime = 200 + Math.random() * 350;
+    await sleep(checkTime);
+    
+    inv.status = isBroken ? 'fail' : 'pass';
+    inv.broken = isBroken;
+    renderReportSkeleton(invStates);
+    
+    const icon = isBroken ? '✗' : '✓';
+    const type = isBroken ? 'err' : 'ok';
+    termLog(icon + ' ' + inv.name + ' — ' + (isBroken ? 'INVARIANT BROKEN' : 'invariant intact'), type);
+  }
+  
+  const total = invStates.length;
+  const passed = invStates.filter(i => i.status === 'pass').length;
+  const failed = invStates.filter(i => i.status === 'fail').length;
+  
+  STATE.results = { total, passed, failed, invStates };
+  STATE.simulated = true;
+  STATE.simulating = false;
+  simulateBtn.disabled = false;
+  setStatus('idle', 'ready');
+  
+  termLog('=== SIMULATION COMPLETE ===', 'accent');
+  termLog('result: ' + passed + '/' + total + ' invariants intact, ' + failed + ' broken', failed > 0 ? 'err' : 'ok');
+}
+
+function renderReportSkeleton(invStates) {
+  const total = invStates.length;
+  const passed = invStates.filter(i => i.status === 'pass').length;
+  const failed = invStates.filter(i => i.status === 'fail').length;
+  const checking = invStates.filter(i => i.status === 'checking').length;
+  const pending = invStates.filter(i => i.status === 'pending').length;
+  
+  const displayPassed = passed;
+  const displayFailed = failed;
+  
+  let html = '';
+  
+  // Summary
+  html += '<div class="report-summary">';
+  html += '<div class="sum-total"><div class="sum-num">' + total + '</div><div class="sum-label">total</div></div>';
+  html += '<div class="sum-passed"><div class="sum-num">' + displayPassed + '</div><div class="sum-label">intact</div></div>';
+  html += '<div class="sum-failed"><div class="sum-num">' + displayFailed + '</div><div class="sum-label">broken</div></div>';
+  html += '</div>';
+  
+  // List
+  html += '<div class="invariant-list">';
+  invStates.forEach(inv => {
+    let cls = '';
+    let badge = '?';
+    let icon = '';
+    if (inv.status === 'pending') { cls = 'inv-pending'; badge = '○'; }
+    else if (inv.status === 'checking') { cls = 'inv-pending'; badge = '◌'; icon = ' inv-checking'; }
+    else if (inv.status === 'pass') { cls = 'inv-pass'; badge = '✓'; }
+    else if (inv.status === 'fail') { cls = 'inv-fail'; badge = '✗'; }
+    
+    html += '<div class="invariant-item ' + cls + '">';
+    html += '<span class="inv-badge' + icon + '">' + badge + '</span>';
+    html += '<span class="inv-item-name">' + inv.name + '</span>';
+    html += '<span class="inv-item-cat">' + inv.cat + '</span>';
+    html += '</div>';
+  });
+  html += '</div>';
+  
+  reportBody.innerHTML = html;
+}
+
+simulateBtn.addEventListener('click', runSimulation);
+
+// Initial report state — empty
+reportBody.innerHTML = '<div class="report-empty"><div class="report-empty-icon">◇</div><div class="report-empty-text">identify dependencies and toggle adversarial modes, then execute simulation</div><div class="report-empty-hint">awaiting input</div></div>';
+
+termLog('gaolaif::cockpit ready', 'ok');
+</script>
+</body>
+</html>
