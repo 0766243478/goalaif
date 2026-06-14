@@ -62,7 +62,7 @@ async function handleAnalyze(
     async () => {
       try {
         const result = await backendClient.analyze(code, filePath, language);
-        sidebarProvider.postMessage({ type: 'analysisResult', payload: result });
+        sidebarProvider.postMessageToWebview({ type: 'analysisResult', payload: result });
         vscode.window.showInformationMessage(`Gaolaif analysis complete: ${result.findings?.length || 0} findings`);
       } catch (err: any) {
         vscode.window.showErrorMessage(`Analysis failed: ${err.message}`);

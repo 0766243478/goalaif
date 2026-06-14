@@ -4,37 +4,87 @@
   "description": "AI-native smart contract security workspace. Protocol protection + Ethical hacking. 100% local.",
   "version": "1.0.0",
   "publisher": "HusseinMohammed",
-  "engines": { "vscode": "^1.85.0" },
-  "categories": ["Other", "Debuggers", "Testing"],
-  "keywords": ["web3", "solidity", "move", "security", "smart-contract", "audit", "bug-bounty"],
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Debuggers",
+    "Testing"
+  ],
+  "keywords": [
+    "web3",
+    "solidity",
+    "move",
+    "security",
+    "smart-contract",
+    "audit",
+    "bug-bounty"
+  ],
   "icon": "media/icon.png",
-  "repository": { "type": "git", "url": "https://github.com/husseinhmed/gaolaif" },
-  "activationEvents": ["onLanguage:solidity", "onLanguage:move", "workspaceContains:**/foundry.toml", "workspaceContains:**/Move.toml"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/husseinhmed/gaolaif"
+  },
+  "activationEvents": [
+    "onLanguage:solidity",
+    "onLanguage:move",
+    "workspaceContains:**/foundry.toml",
+    "workspaceContains:**/Move.toml"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
-      "activitybar": [{
-        "id": "gaolaif-sidebar",
-        "title": "Gaolaif",
-        "icon": "media/shield.svg"
-      }]
+      "activitybar": [
+        {
+          "id": "gaolaif-sidebar",
+          "title": "Gaolaif",
+          "icon": "media/shield.svg"
+        }
+      ]
     },
     "views": {
-      "gaolaif-sidebar": [{
-        "type": "webview",
-        "id": "gaolaif.sidebar",
-        "name": "Security Workspace"
-      }]
+      "gaolaif-sidebar": [
+        {
+          "type": "webview",
+          "id": "gaolaif.sidebar",
+          "name": "Security Workspace"
+        }
+      ]
     },
     "commands": [
-      { "command": "gaolaif.auditSelection",   "title": "Gaolaif: Audit This Code" },
-      { "command": "gaolaif.exploitSelection", "title": "Gaolaif: Try to Exploit This" },
-      { "command": "gaolaif.analyze",          "title": "Gaolaif: Analyze Selection" },
-      { "command": "gaolaif.analyzeCurrentFile", "title": "Gaolaif: Analyze Current File" },
-      { "command": "gaolaif.runSandbox",       "title": "Gaolaif: Start Sandbox" },
-      { "command": "gaolaif.generateReport",   "title": "Gaolaif: Generate Bug Bounty Report" },
-      { "command": "gaolaif.executePoC",       "title": "Gaolaif: ⚡ Execute PoC" },
-      { "command": "gaolaif.switchMode",       "title": "Gaolaif: Switch Mode (Protocol/Hacker)" }
+      {
+        "command": "gaolaif.auditSelection",
+        "title": "Gaolaif: Audit This Code"
+      },
+      {
+        "command": "gaolaif.exploitSelection",
+        "title": "Gaolaif: Try to Exploit This"
+      },
+      {
+        "command": "gaolaif.analyze",
+        "title": "Gaolaif: Analyze Selection"
+      },
+      {
+        "command": "gaolaif.analyzeCurrentFile",
+        "title": "Gaolaif: Analyze Current File"
+      },
+      {
+        "command": "gaolaif.runSandbox",
+        "title": "Gaolaif: Start Sandbox"
+      },
+      {
+        "command": "gaolaif.generateReport",
+        "title": "Gaolaif: Generate Bug Bounty Report"
+      },
+      {
+        "command": "gaolaif.executePoC",
+        "title": "Gaolaif: ⚡ Execute PoC"
+      },
+      {
+        "command": "gaolaif.switchMode",
+        "title": "Gaolaif: Switch Mode (Protocol/Hacker)"
+      }
     ],
     "menus": {
       "editor/context": [
@@ -61,21 +111,66 @@
       ]
     },
     "keybindings": [
-      { "command": "gaolaif.auditSelection",   "key": "ctrl+shift+a", "mac": "cmd+shift+a", "when": "editorHasSelection" },
-      { "command": "gaolaif.exploitSelection", "key": "ctrl+shift+e", "mac": "cmd+shift+e", "when": "editorHasSelection" },
-      { "command": "gaolaif.analyze",          "key": "ctrl+shift+l", "mac": "cmd+shift+l", "when": "editorHasSelection" },
-      { "command": "gaolaif.analyzeCurrentFile","key": "ctrl+shift+alt+l","mac": "cmd+shift+alt+l" },
-      { "command": "gaolaif.executePoC",       "key": "ctrl+shift+x", "mac": "cmd+shift+x" }
+      {
+        "command": "gaolaif.auditSelection",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a",
+        "when": "editorHasSelection"
+      },
+      {
+        "command": "gaolaif.exploitSelection",
+        "key": "ctrl+shift+e",
+        "mac": "cmd+shift+e",
+        "when": "editorHasSelection"
+      },
+      {
+        "command": "gaolaif.analyze",
+        "key": "ctrl+shift+l",
+        "mac": "cmd+shift+l",
+        "when": "editorHasSelection"
+      },
+      {
+        "command": "gaolaif.analyzeCurrentFile",
+        "key": "ctrl+shift+alt+l",
+        "mac": "cmd+shift+alt+l"
+      },
+      {
+        "command": "gaolaif.executePoC",
+        "key": "ctrl+shift+x",
+        "mac": "cmd+shift+x"
+      }
     ],
     "configuration": {
       "title": "Gaolaif",
       "properties": {
-        "gaolaif.mode":           { "type": "string", "enum": ["protocol", "hacker"], "default": "protocol" },
-        "gaolaif.ollamaUrl":      { "type": "string", "default": "http://localhost:11434" },
-        "gaolaif.backendPort":    { "type": "number", "default": 7432 },
-        "gaolaif.defaultRpcEvm":  { "type": "string", "default": "https://eth.llamarpc.com" },
-        "gaolaif.defaultRpcBsc":  { "type": "string", "default": "https://bsc-dataseed.binance.org/" },
-        "gaolaif.maxScenarios":   { "type": "number", "default": 1000 }
+        "gaolaif.mode": {
+          "type": "string",
+          "enum": [
+            "protocol",
+            "hacker"
+          ],
+          "default": "protocol"
+        },
+        "gaolaif.ollamaUrl": {
+          "type": "string",
+          "default": "http://localhost:11434"
+        },
+        "gaolaif.backendPort": {
+          "type": "number",
+          "default": 7432
+        },
+        "gaolaif.defaultRpcEvm": {
+          "type": "string",
+          "default": "https://eth.llamarpc.com"
+        },
+        "gaolaif.defaultRpcBsc": {
+          "type": "string",
+          "default": "https://bsc-dataseed.binance.org/"
+        },
+        "gaolaif.maxScenarios": {
+          "type": "number",
+          "default": 1000
+        }
       }
     }
   },
@@ -89,14 +184,16 @@
   "dependencies": {
     "@vscode/webview-ui-toolkit": "^1.4.0",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
-    "@types/vscode": "^1.85.0",
     "@types/react": "^18.2.0",
+    "@types/vscode": "^1.85.0",
+    "@types/ws": "^8.18.1",
+    "ts-loader": "^9.5.1",
     "typescript": "^5.3.0",
     "webpack": "^5.89.0",
-    "webpack-cli": "^5.1.4",
-    "ts-loader": "^9.5.1"
+    "webpack-cli": "^5.1.4"
   }
 }
