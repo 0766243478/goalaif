@@ -18,6 +18,12 @@ export function registerCommands(
     vscode.commands.registerCommand('gaolaif.exploitSelection', () =>
       handleExploitSelection(backendClient, sidebarProvider)
     ),
+    vscode.commands.registerCommand('gaolaif.analyze', () =>
+      handleAnalyze(backendClient, sidebarProvider)
+    ),
+    vscode.commands.registerCommand('gaolaif.analyzeCurrentFile', () =>
+      handleAnalyzeCurrentFile(backendClient, sidebarProvider)
+    ),
     vscode.commands.registerCommand('gaolaif.runSandbox', () =>
       handleRunSandbox(backendClient)
     ),
@@ -35,4 +41,45 @@ export function registerCommands(
       vscode.window.showInformationMessage(`Gaolaif switched to ${next} mode`);
     })
   );
+}
+
+async function handleAnalyze(
+  backendClient: BackendClient,
+  sidebarProvider: SidebarProvider
+) {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) {
+    vscode.window.showErrorMessage('No active editor. Open a Solidity/Move file first.');
+    return;
+  }
+  const selection = editor.selection;
+  const code = editor.document.getText(selection.isEmpty ? undefined : selection);
+  const filePath = editor.document.uri.fsPath;
+  const language = filePath.endsWith('.sol') ? 'solidity' : filePath.endsWith('.move') ? 'move' : 'solidity';
+
+  vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: 'Gaolaif: Analyzing...' },
+    async () => {
+      try {
+        const result = await backendClient.analyze(code, filePath, language);
+        sidebarProvider.postMessage({ type: 'analysisResult', payload: result });
+        vscode.window.showInformationMessage(`Gaolaif analysis complete: ${result.findings?.length || 0} findings`);
+      } catch (err: any) {
+        vscode.window.showErrorMessage(`Analysis failed: ${err.message}`);
+      }
+    }
+  );
+}
+
+async function handleAnalyzeCurrentFile(
+  backendClient: BackendClient,
+  sidebarProvider: SidebarProvider
+) {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) {
+    vscode.window.showErrorMessage('No active editor.');
+    return;
+  }
+  editor.selection = new vscode.Selection(0, 0, editor.document.lineCount - 1, 0);
+  await handleAnalyze(backendClient, sidebarProvider);
 }

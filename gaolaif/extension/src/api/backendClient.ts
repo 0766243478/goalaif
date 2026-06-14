@@ -88,6 +88,15 @@ export class BackendClient {
     return resp.json();
   }
 
+  async analyze(code: string, filePath: string, language: string): Promise<any> {
+    return this.post('/analyze', {
+      code,
+      file_path: filePath,
+      language,
+      max_scenarios: 3,
+    });
+  }
+
   stopBackend() {
     if (this.backendProcess) {
       this.backendProcess.kill('SIGTERM');

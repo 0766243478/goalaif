@@ -29,6 +29,8 @@
     "commands": [
       { "command": "gaolaif.auditSelection",   "title": "Gaolaif: Audit This Code" },
       { "command": "gaolaif.exploitSelection", "title": "Gaolaif: Try to Exploit This" },
+      { "command": "gaolaif.analyze",          "title": "Gaolaif: Analyze Selection" },
+      { "command": "gaolaif.analyzeCurrentFile", "title": "Gaolaif: Analyze Current File" },
       { "command": "gaolaif.runSandbox",       "title": "Gaolaif: Start Sandbox" },
       { "command": "gaolaif.generateReport",   "title": "Gaolaif: Generate Bug Bounty Report" },
       { "command": "gaolaif.executePoC",       "title": "Gaolaif: ⚡ Execute PoC" },
@@ -45,12 +47,24 @@
           "command": "gaolaif.exploitSelection",
           "when": "editorHasSelection && (resourceLangId == solidity || resourceLangId == move)",
           "group": "gaolaif@2"
+        },
+        {
+          "command": "gaolaif.analyze",
+          "when": "editorHasSelection && (resourceLangId == solidity || resourceLangId == move)",
+          "group": "gaolaif@3"
+        },
+        {
+          "command": "gaolaif.analyzeCurrentFile",
+          "when": "resourceLangId == solidity || resourceLangId == move",
+          "group": "gaolaif@4"
         }
       ]
     },
     "keybindings": [
       { "command": "gaolaif.auditSelection",   "key": "ctrl+shift+a", "mac": "cmd+shift+a", "when": "editorHasSelection" },
       { "command": "gaolaif.exploitSelection", "key": "ctrl+shift+e", "mac": "cmd+shift+e", "when": "editorHasSelection" },
+      { "command": "gaolaif.analyze",          "key": "ctrl+shift+l", "mac": "cmd+shift+l", "when": "editorHasSelection" },
+      { "command": "gaolaif.analyzeCurrentFile","key": "ctrl+shift+alt+l","mac": "cmd+shift+alt+l" },
       { "command": "gaolaif.executePoC",       "key": "ctrl+shift+x", "mac": "cmd+shift+x" }
     ],
     "configuration": {
