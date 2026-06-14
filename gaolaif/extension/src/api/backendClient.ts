@@ -52,8 +52,6 @@ export class BackendClient {
   }
 
   private async connectWebSocket(): Promise<void> {
-    const wsModule = await import('ws');
-    const WebSocket = wsModule.default;
     this.ws = new WebSocket(`ws://localhost:${this.port}/ws`);
     this.ws.on('message', (data: Buffer) => {
       try {
