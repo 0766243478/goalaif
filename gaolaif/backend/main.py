@@ -1,6 +1,9 @@
+from dotenv import load_dotenv
+import os
+load_dotenv()
+
 import asyncio
 import json
-import os
 import time
 from typing import Optional
 
