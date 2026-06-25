@@ -1,5 +1,16 @@
+"""
+SmartMemory — local knowledge base with Qdrant primary / dict fallback.
+
+Fixes:
+  P-3  init() is called lazily (via background task) so Qdrant connection
+       timeout does not block FastAPI startup.
+  H-11 _search_fallback now uses pure substring matching (the hash-based
+       branch was unreliable and has been removed).
+"""
+
 import hashlib
 import json
+import uuid
 from typing import Optional
 from dataclasses import dataclass, field
 
@@ -15,15 +26,17 @@ class MemoryEntry:
 class SmartMemory:
     def __init__(self):
         self._qdrant_client = None
-        self._collection_name = "gaolaif_memory"
+        self._collection_name = "sireen_memory"
         self._fallback_store: dict[str, MemoryEntry] = {}
         self._use_qdrant = False
-        self._init_qdrant()
+        # NOTE: init() is NOT called here — it is called from the FastAPI
+        # startup event via asyncio.to_thread(memory.init) so the 2-second
+        # Qdrant timeout does not block uvicorn startup.
 
-    def _init_qdrant(self):
+    def init(self):
+        """P-3 fix: called in background, not in __init__."""
         try:
             from qdrant_client import QdrantClient
-            from qdrant_client.http.exceptions import UnexpectedResponse
             self._qdrant_client = QdrantClient("localhost", port=6333, timeout=2.0)
             self._qdrant_client.get_collections()
             self._ensure_collection()
@@ -33,8 +46,8 @@ class SmartMemory:
 
     def _ensure_collection(self):
         from qdrant_client.http.models import VectorParams, Distance
-        collections = [c.name for c in self._qdrant_client.get_collections().collections]
-        if self._collection_name not in collections:
+        cols = [c.name for c in self._qdrant_client.get_collections().collections]
+        if self._collection_name not in cols:
             self._qdrant_client.create_collection(
                 collection_name=self._collection_name,
                 vectors_config=VectorParams(size=384, distance=Distance.COSINE),
@@ -44,6 +57,8 @@ class SmartMemory:
         return hashlib.sha256(content.encode()).hexdigest()[:16]
 
     def save(self, key: str, content: str, metadata: Optional[dict] = None):
+        if not key or not content:
+            return
         entry = MemoryEntry(
             key=key,
             content=content,
@@ -56,17 +71,25 @@ class SmartMemory:
             self._fallback_store[key] = entry
 
     def _save_qdrant(self, entry: MemoryEntry):
-        from qdrant_client.http.models import PointStruct
-        point_id = abs(hash(entry.key)) % (2**63)
-        self._qdrant_client.upsert(
-            collection_name=self._collection_name,
-            points=[PointStruct(
-                id=point_id,
-                vector=[0.0] * 384,
-                payload={"key": entry.key, "content": entry.content,
-                         "metadata": json.dumps(entry.metadata), "hash": entry.hash},
-            )],
-        )
+        try:
+            from qdrant_client.http.models import PointStruct
+            point_id = abs(hash(entry.key)) % (2 ** 63)
+            self._qdrant_client.upsert(
+                collection_name=self._collection_name,
+                points=[PointStruct(
+                    id=point_id,
+                    vector=[0.0] * 384,
+                    payload={
+                        "key": entry.key,
+                        "content": entry.content,
+                        "metadata": json.dumps(entry.metadata),
+                        "hash": entry.hash,
+                    },
+                )],
+            )
+        except Exception:
+            # Fall back to dict on Qdrant write failure
+            self._fallback_store[entry.key] = entry
 
     def search(self, query: str, top_k: int = 5) -> list[MemoryEntry]:
         if self._use_qdrant:
@@ -75,7 +98,6 @@ class SmartMemory:
 
     def _search_qdrant(self, query: str, top_k: int) -> list[MemoryEntry]:
         try:
-            from qdrant_client.http.models import Filter, FieldCondition, MatchValue
             results = self._qdrant_client.search(
                 collection_name=self._collection_name,
                 query_vector=[0.0] * 384,
@@ -92,14 +114,21 @@ class SmartMemory:
                 ))
             return entries
         except Exception:
-            return []
+            return self._search_fallback(query, top_k)
 
     def _search_fallback(self, query: str, top_k: int) -> list[MemoryEntry]:
-        qhash = self._compute_hash(query)
-        results = []
-        for entry in self._fallback_store.values():
-            if qhash in entry.hash or query.lower() in entry.content.lower():
-                results.append(entry)
+        """
+        H-11 fix: pure case-insensitive substring match on content.
+        The previous hash-based branch (qhash in entry.hash) was a near-miss
+        comparison that almost never succeeded. Removed entirely.
+        """
+        ql = query.lower()
+        results = [
+            entry for entry in self._fallback_store.values()
+            if ql in entry.content.lower()
+        ]
+        # Rank by content length proximity to query length (simple heuristic)
+        results.sort(key=lambda e: abs(len(e.content) - len(query)))
         return results[:top_k]
 
     def get(self, key: str) -> Optional[MemoryEntry]:
@@ -127,4 +156,4 @@ class SmartMemory:
                 )
         except Exception:
             pass
-        return None
+        return self._fallback_store.get(key)

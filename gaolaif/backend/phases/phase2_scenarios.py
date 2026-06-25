@@ -60,7 +60,16 @@ async def phase2_scenarios(
     if router is None or not router.is_configured():
         return DEFAULT_SCENARIOS
 
-    prompt = f"Filename: {file_name}\n\nProtocol Map:\n{json.dumps(protocol_map.__dict__, indent=2)}\n\nSource:\n```solidity\n{source_code[:6000]}\n```"
+    # H-9: warn if code is truncated, use asdict for serialisation (M-3)
+    import dataclasses as _dc
+    truncated = len(source_code) > 6000
+    code_preview = source_code[:6000]
+    truncation_note = "\n// [NOTE: source truncated to 6000 chars for LLM context]" if truncated else ""
+    prompt = (
+        f"Filename: {file_name}\n\nProtocol Map:\n"
+        f"{json.dumps(_dc.asdict(protocol_map), indent=2)}\n\n"
+        f"Source:{truncation_note}\n```solidity\n{code_preview}\n```"
+    )
 
     resp = router.call(
         "attacker",

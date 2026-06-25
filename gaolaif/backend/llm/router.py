@@ -129,3 +129,8 @@ class Router:
         if self._client:
             self._client.close()
             self._client = None
+
+    def reload(self):
+        """Re-read the API key from env and reset the HTTP client."""
+        self.api_key = os.environ.get("OPENROUTER_API_KEY", "")
+        self.close()  # next call to _get_client() will create a fresh client

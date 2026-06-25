@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Optional
+import dataclasses
 
 
 @dataclass
@@ -9,6 +10,9 @@ class ProtocolMap:
     modifiers: list[str] = field(default_factory=list)
     invariants: list[str] = field(default_factory=list)
     imports: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return dataclasses.asdict(self)
 
 
 @dataclass
@@ -21,6 +25,11 @@ class AttackScenario:
     exploit_steps: list[str] = field(default_factory=list)
     estimated_impact: str = ""
     scenario_type: str = "reentrancy"
+
+    # Alias so both `scenario.impact` and `scenario.estimated_impact` work
+    @property
+    def impact(self) -> str:
+        return self.estimated_impact
 
 
 @dataclass
@@ -47,7 +56,7 @@ class EnvFailureResult:
 @dataclass
 class Finding:
     title: str
-    severity: str
+    severity: str          # always stored UPPERCASE (normalised on creation)
     description: str
     affected_functions: list[str] = field(default_factory=list)
     attack_scenario: Optional[AttackScenario] = None
@@ -56,6 +65,10 @@ class Finding:
     confirmed: bool = False
     category: str = ""
     remediation: str = ""
+
+    def __post_init__(self):
+        # H-5 fix: always normalise severity to uppercase
+        self.severity = self.severity.upper()
 
 
 @dataclass
