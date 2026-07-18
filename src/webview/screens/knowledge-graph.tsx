@@ -206,7 +206,8 @@ function KnowledgeGraph() {
             </div>
           </div>
         </div>
-        <div style={{ display: 'flex', gap: '4px' }}>
+        <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+          <Badge variant="warning" size="sm">Experimental</Badge>
           <Button variant="secondary" size="sm" icon={<IconRefreshCw size={12} />} onClick={handleRunAnalysis}>Analyze</Button>
           <Button variant="secondary" size="sm" icon={<IconDownload size={12} />} onClick={handleExport}>Export</Button>
         </div>

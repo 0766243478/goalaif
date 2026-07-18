@@ -2339,6 +2339,7 @@
 
   // src/webview/providers/vscode-api.ts
   var _vscode = null;
+  var _messageListeners = [];
   function getVscodeApi() {
     if (!_vscode) {
       try {
@@ -2356,6 +2357,23 @@
   }
   function postMessage(message) {
     getVscodeApi().postMessage(message);
+  }
+  function dispatchMessage(message) {
+    for (const handler of _messageListeners) {
+      try {
+        handler(message);
+      } catch (err) {
+        console.error("[vscode-api] Message handler error:", err);
+      }
+    }
+  }
+  if (typeof window !== "undefined") {
+    window.addEventListener("message", (event) => {
+      const message = event.data;
+      if (message && typeof message === "object") {
+        dispatchMessage(message);
+      }
+    });
   }
 
   // src/webview/screens/bounty-dashboard.tsx
@@ -2543,7 +2561,7 @@
       padding: "8px 12px",
       "border-bottom": "1px solid var(--vscode-panel-border)",
       background: "var(--vscode-panel-background)"
-    } }, /* @__PURE__ */ h("div", { style: { display: "flex", "align-items": "center", gap: "8px" } }, /* @__PURE__ */ h(IconTarget, { size: 16, style: { color: "var(--vscode-button-background)" } }), /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("span", { style: { "font-weight": 600 } }, "Bounty Dashboard"), /* @__PURE__ */ h("div", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)" } }, programs().length, " programs \xB7 ", Object.values(platformStats()).reduce((a, b) => a + b.count, 0), " platforms"))), /* @__PURE__ */ h(Button, { variant: "secondary", size: "sm", icon: /* @__PURE__ */ h(IconRefreshCw, { size: 12 }), onClick: () => postMessage({ type: "bounty:refresh" }) }, "Refresh")), /* @__PURE__ */ h("div", { style: {
+    } }, /* @__PURE__ */ h("div", { style: { display: "flex", "align-items": "center", gap: "8px" } }, /* @__PURE__ */ h(IconTarget, { size: 16, style: { color: "var(--vscode-button-background)" } }), /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("span", { style: { "font-weight": 600 } }, "Bounty Dashboard"), /* @__PURE__ */ h("div", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)" } }, programs().length, " programs \xB7 ", Object.values(platformStats()).reduce((a, b) => a + b.count, 0), " platforms"))), /* @__PURE__ */ h("div", { style: { display: "flex", "align-items": "center", gap: "8px" } }, /* @__PURE__ */ h(Badge, { variant: "warning", size: "sm" }, "Coming Soon"), /* @__PURE__ */ h(Button, { variant: "secondary", size: "sm", icon: /* @__PURE__ */ h(IconRefreshCw, { size: 12 }), onClick: () => postMessage({ type: "bounty:refresh" }) }, "Refresh"))), /* @__PURE__ */ h("div", { style: {
       display: "flex",
       gap: "1px",
       padding: "4px 8px",

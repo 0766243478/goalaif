@@ -7,7 +7,6 @@
 import { createSignal, createEffect, onCleanup, For, Show } from 'solid-js';
 import { render } from 'solid-js/web';
 import { Button } from '../components/Button';
-import { Badge } from '../components/Badge';
 import { Input } from '../components/Input';
 import { injectGlobalStyles } from '../design-system/styles';
 import {

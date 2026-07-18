@@ -317,7 +317,8 @@ function AttackWorkspace() {
             </div>
           </div>
         </div>
-        <div style={{ display: 'flex', gap: '4px' }}>
+        <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+          <Badge variant="warning" size="sm">Experimental</Badge>
           <Button variant="secondary" size="sm" icon={<IconRefreshCw size={12} />} onClick={() => postMessage({ type: 'attack:refresh' })}>
             Refresh
           </Button>
@@ -436,13 +437,19 @@ function AttackWorkspace() {
                         </div>
                         <div style={{ display: 'flex', 'flex-direction': 'column', gap: '4px', 'align-items': 'flex-end' }}>
                           <Button
-                            variant={isRunning ? 'secondary' : 'primary'}
+                            variant="secondary"
                             size="sm"
-                            icon={isRunning ? <IconPause size={12} /> : <IconPlay size={12} />}
-                            onClick={() => handleRunVector(vector)}
-                            disabled={isRunning}
+                            icon={<IconPlay size={12} />}
+                            onClick={() => {
+                              postMessage({ 
+                                type: 'info', 
+                                payload: { message: 'Attack Workspace: Run feature is experimental and requires full pipeline integration.' } 
+                              });
+                            }}
+                            disabled
+                            title="Experimental: Run feature requires full pipeline integration"
                           >
-                            {isRunning ? 'Running...' : 'Run'}
+                            Run (Experimental)
                           </Button>
                           {result && result.status !== 'pending' && (
                             <Button variant="ghost" size="sm" onClick={() => setSelectedVectorId(vector.id)}>

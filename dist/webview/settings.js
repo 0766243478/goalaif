@@ -2385,6 +2385,7 @@
 
   // src/webview/providers/vscode-api.ts
   var _vscode = null;
+  var _messageListeners = [];
   function getVscodeApi() {
     if (!_vscode) {
       try {
@@ -2402,6 +2403,23 @@
   }
   function postMessage(message) {
     getVscodeApi().postMessage(message);
+  }
+  function dispatchMessage(message) {
+    for (const handler of _messageListeners) {
+      try {
+        handler(message);
+      } catch (err) {
+        console.error("[vscode-api] Message handler error:", err);
+      }
+    }
+  }
+  if (typeof window !== "undefined") {
+    window.addEventListener("message", (event) => {
+      const message = event.data;
+      if (message && typeof message === "object") {
+        dispatchMessage(message);
+      }
+    });
   }
 
   // src/webview/screens/settings.tsx

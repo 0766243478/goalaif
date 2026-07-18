@@ -29,18 +29,31 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   private _initializeAIClient(): void {
     const config = vscode.workspace.getConfiguration('sireen');
     const provider = config.get('aiProvider') || 'openrouter';
-    const apiKey = config.get('aiApiKey') || '';
     const model = config.get('aiModel') || 'openai/o3-mini';
-
-    if (apiKey) {
-      this._aiClient = new AIClient({ provider, apiKey, model });
-    } else {
-      console.warn('[SidebarProvider] AI API key not configured — AI chat will not work');
-    }
+    
+    // Load API key from SecretStorage
+    this._context.secrets.get('sireen.aiApiKey').then(apiKey => {
+      if (apiKey) {
+        this._aiClient = new AIClient({ provider, apiKey, model });
+      } else {
+        console.warn('[SidebarProvider] AI API key not configured in SecretStorage — AI chat will not work');
+      }
+    });
   }
 
   private _reinitializeAIClient(): void {
-    this._initializeAIClient();
+    const config = vscode.workspace.getConfiguration('sireen');
+    const provider = config.get('aiProvider') || 'openrouter';
+    const model = config.get('aiModel') || 'openai/o3-mini';
+    
+    this._context.secrets.get('sireen.aiApiKey').then(apiKey => {
+      if (apiKey) {
+        this._aiClient = new AIClient({ provider, apiKey, model });
+      } else {
+        this._aiClient = undefined;
+        console.warn('[SidebarProvider] AI API key not configured in SecretStorage — AI chat will not work');
+      }
+    });
   }
 
   setPipelineManager(pm: PipelineManager): void {
@@ -282,6 +295,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       // ── Errors ─────────────────────────────────────────────────
       case 'error':
         vscode.window.showErrorMessage(message.payload?.message || 'Sireen: An error occurred');
+        break;
+
+      // ── Info Messages ──────────────────────────────────────
+      case 'info':
+        vscode.window.showInformationMessage(message.payload?.message || 'Sireen: Information');
         break;
 
       default:
@@ -637,6 +655,8 @@ contract VulnerableVault {
           type: 'pipeline:complete',
           payload: { report: result.report },
         });
+        // Store report in workspace state
+        this._context.workspaceState.update(`report:${result.report.id}`, result.report);
         // Notify War Room if open
         vscode.commands.executeCommand('sireen.openWarRoom');
       } else {
@@ -790,10 +810,19 @@ contract VulnerableVault {
     const updates: Array<[string, any]> = Object.entries(payload).map(([key, value]) => [key, value]);
     
     for (const [key, value] of updates) {
-      config.update(key, value, vscode.ConfigurationTarget.Workspace);
+      if (key === 'aiApiKey') {
+        // Store API key in SecretStorage, not workspace config
+        if (value) {
+          this._context.secrets.store('sireen.aiApiKey', value);
+        } else {
+          this._context.secrets.delete('sireen.aiApiKey');
+        }
+      } else {
+        config.update(key, value, vscode.ConfigurationTarget.Workspace);
+      }
     }
     
-    // Reinitialize AI client if API key changed
+    // Reinitialize AI client if API key, model, or provider changed
     if (payload.aiApiKey !== undefined || payload.aiModel !== undefined || payload.aiProvider !== undefined) {
       this._reinitializeAIClient();
     }
@@ -806,9 +835,9 @@ contract VulnerableVault {
     const config = vscode.workspace.getConfiguration('sireen');
     const settings: Record<string, any> = {};
     
-    // All known settings keys
+    // All known settings keys (excluding aiApiKey which is in SecretStorage)
     const keys = [
-      'aiProvider', 'aiApiKey', 'aiModel', 'forgePath', 'forkRpcUrl',
+      'aiProvider', 'aiModel', 'forgePath', 'forkRpcUrl',
       'maxRetries', 'dockerEnabled', 'dockerImage', 'workspaceDir',
       'autoSave', 'verboseLogging', 'gasReporting', 'detailedTraces',
       'showGasCosts', 'highlightReverts', 'showStorageChanges',
@@ -822,7 +851,11 @@ contract VulnerableVault {
       settings[key] = config.get(key);
     }
     
-    this.postMessage({ type: 'settings:loaded', payload: { settings } });
+    // Check if API key exists in SecretStorage (don't expose the actual key)
+    this._context.secrets.get('sireen.aiApiKey').then(apiKey => {
+      settings.aiApiKey = apiKey ? '***' : '';
+      this.postMessage({ type: 'settings:loaded', payload: { settings } });
+    });
   }
 
   private handleSettingsExport(payload: { path?: string }): void {

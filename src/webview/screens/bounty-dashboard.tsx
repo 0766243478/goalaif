@@ -222,9 +222,12 @@ function BountyDashboard() {
             </div>
           </div>
         </div>
-        <Button variant="secondary" size="sm" icon={<IconRefreshCw size={12} />} onClick={() => postMessage({ type: 'bounty:refresh' })}>
-          Refresh
-        </Button>
+        <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+          <Badge variant="warning" size="sm">Coming Soon</Badge>
+          <Button variant="secondary" size="sm" icon={<IconRefreshCw size={12} />} onClick={() => postMessage({ type: 'bounty:refresh' })}>
+            Refresh
+          </Button>
+        </div>
       </div>
 
       {/* Tabs */}

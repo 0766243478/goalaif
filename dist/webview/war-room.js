@@ -1686,7 +1686,7 @@
         "font-size": "var(--vscode-font-size)"
       }
     };
-    const variantStyles = {
+    const variantStyles2 = {
       primary: {
         background: "var(--vscode-button-background)",
         color: "var(--vscode-button-foreground)",
@@ -1711,7 +1711,7 @@
     const combinedStyle = {
       ...baseStyle,
       ...sizeStyles[size],
-      ...variantStyles[variant],
+      ...variantStyles2[variant],
       ...props.style || {}
     };
     const handleClick = (e) => {
@@ -1754,6 +1754,84 @@
       ) : props.icon ? /* @__PURE__ */ h("span", { style: { display: "flex", "align-items": "center" }, "aria-hidden": "true" }, props.icon) : null,
       props.children
     );
+  }
+
+  // src/webview/components/Badge.tsx
+  var variantStyles = {
+    critical: {
+      background: "var(--vscode-testing-iconFailed)",
+      color: "var(--vscode-editor-background)"
+    },
+    high: {
+      background: "var(--vscode-testing-iconErrored)",
+      color: "var(--vscode-editor-background)"
+    },
+    medium: {
+      background: "var(--vscode-testing-iconQueued)",
+      color: "var(--vscode-editor-background)"
+    },
+    low: {
+      background: "var(--vscode-testing-iconPassed)",
+      color: "var(--vscode-editor-background)"
+    },
+    info: {
+      background: "var(--vscode-badge-background)",
+      color: "var(--vscode-badge-foreground)"
+    },
+    none: {
+      background: "var(--vscode-badge-background)",
+      color: "var(--vscode-badge-foreground)"
+    },
+    default: {
+      background: "var(--vscode-badge-background)",
+      color: "var(--vscode-badge-foreground)"
+    },
+    success: {
+      background: "var(--vscode-testing-iconPassed)",
+      color: "var(--vscode-editor-background)"
+    },
+    warning: {
+      background: "var(--vscode-testing-iconQueued)",
+      color: "var(--vscode-editor-background)"
+    },
+    danger: {
+      background: "var(--vscode-testing-iconFailed)",
+      color: "var(--vscode-editor-background)"
+    }
+  };
+  function Badge(props) {
+    const variant = props.variant || "default";
+    const size = props.size || "md";
+    const styles = variantStyles[variant];
+    const baseStyle = {
+      display: "inline-flex",
+      "align-items": "center",
+      gap: size === "sm" ? "3px" : "4px",
+      padding: size === "sm" ? "1px 5px" : "2px 6px",
+      "font-family": "var(--vscode-font-family)",
+      "font-size": size === "sm" ? "10px" : "var(--vscode-font-size)",
+      "line-height": size === "sm" ? "1.2" : "var(--vscode-line-height)",
+      "font-weight": "500",
+      "border-radius": "2px",
+      "white-space": "nowrap",
+      "user-select": "none",
+      "-webkit-font-smoothing": "antialiased",
+      ...styles,
+      ...props.style || {}
+    };
+    return /* @__PURE__ */ h("span", { style: baseStyle, class: props.class || "", role: "status" }, props.dot && /* @__PURE__ */ h(
+      "span",
+      {
+        style: {
+          width: "4px",
+          height: "4px",
+          "border-radius": "50%",
+          background: "currentColor",
+          "flex-shrink": "0"
+        },
+        "aria-hidden": "true"
+      }
+    ), props.children);
   }
 
   // src/webview/design-system/tokens.css
@@ -2247,6 +2325,7 @@
 
   // src/webview/providers/vscode-api.ts
   var _vscode = null;
+  var _messageListeners = [];
   function getVscodeApi() {
     if (!_vscode) {
       try {
@@ -2264,6 +2343,23 @@
   }
   function postMessage(message) {
     getVscodeApi().postMessage(message);
+  }
+  function dispatchMessage(message) {
+    for (const handler of _messageListeners) {
+      try {
+        handler(message);
+      } catch (err) {
+        console.error("[vscode-api] Message handler error:", err);
+      }
+    }
+  }
+  if (typeof window !== "undefined") {
+    window.addEventListener("message", (event) => {
+      const message = event.data;
+      if (message && typeof message === "object") {
+        dispatchMessage(message);
+      }
+    });
   }
 
   // src/webview/screens/war-room.tsx

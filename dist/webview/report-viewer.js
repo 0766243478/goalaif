@@ -54,13 +54,13 @@
   var Effects = null;
   var ExecCount = 0;
   function createRoot(fn, detachedOwner) {
-    const listener = Listener, owner = Owner, unowned = fn.length === 0, current = detachedOwner === void 0 ? owner : detachedOwner, root2 = unowned ? UNOWNED : {
+    const listener = Listener, owner = Owner, unowned = fn.length === 0, current = detachedOwner === void 0 ? owner : detachedOwner, root = unowned ? UNOWNED : {
       owned: null,
       cleanups: null,
       context: current ? current.context : null,
       owner: current
-    }, updateFn = unowned ? fn : () => fn(() => untrack(() => cleanNode(root2)));
-    Owner = root2;
+    }, updateFn = unowned ? fn : () => fn(() => untrack(() => cleanNode(root)));
+    Owner = root;
     Listener = null;
     try {
       return runUpdates(updateFn, true);
@@ -95,6 +95,15 @@
     else
       updateComputation(c);
   }
+  function createEffect(fn, value, options) {
+    runEffects = runUserEffects;
+    const c = createComputation(fn, value, false, STALE), s = SuspenseContext && useContext(SuspenseContext);
+    if (s)
+      c.suspense = s;
+    if (!options || !options.render)
+      c.user = true;
+    Effects ? Effects.push(c) : updateComputation(c);
+  }
   function createMemo(fn, value, options) {
     options = options ? Object.assign({}, signalOptions, options) : signalOptions;
     const c = createComputation(fn, value, true, 0);
@@ -120,6 +129,9 @@
     } finally {
       Listener = listener;
     }
+  }
+  function onMount(fn) {
+    createEffect(() => untrack(fn));
   }
   function onCleanup(fn) {
     if (Owner === null)
@@ -159,6 +171,10 @@
     });
   }
   var [transPending, setTransPending] = /* @__PURE__ */ createSignal(false);
+  function useContext(context) {
+    let value;
+    return Owner && Owner.context && (value = Owner.context[context.id]) !== void 0 ? value : context.defaultValue;
+  }
   var SuspenseContext;
   function readSignal() {
     const runningTransition = Transition && Transition.running;
@@ -483,6 +499,31 @@
         });
       }
     }
+  }
+  function runUserEffects(queue) {
+    let i, userLength = 0;
+    for (i = 0; i < queue.length; i++) {
+      const e = queue[i];
+      if (!e.user)
+        runTop(e);
+      else
+        queue[userLength++] = e;
+    }
+    if (sharedConfig.context) {
+      if (sharedConfig.count) {
+        sharedConfig.effects || (sharedConfig.effects = []);
+        sharedConfig.effects.push(...queue.slice(0, userLength));
+        return;
+      }
+      setHydrateContext();
+    }
+    if (sharedConfig.effects && (sharedConfig.done || !sharedConfig.count)) {
+      queue = [...sharedConfig.effects, ...queue];
+      userLength += sharedConfig.effects.length;
+      delete sharedConfig.effects;
+    }
+    for (i = 0; i < userLength; i++)
+      runTop(queue[i]);
   }
   function lookUpstream(node, ignore) {
     const runningTransition = Transition && Transition.running;
@@ -1036,17 +1077,6 @@
     }
   }
   var $$EVENTS = "_$DX_DELEGATE";
-  function render(code, element, init, options = {}) {
-    let disposer;
-    createRoot((dispose2) => {
-      disposer = dispose2;
-      element === document ? code() : insert(element, code(), element.firstChild ? null : void 0, init);
-    }, options.owner);
-    return () => {
-      disposer();
-      element.textContent = "";
-    };
-  }
   function delegateEvents(eventNames, document2 = window.document) {
     const e = document2[$$EVENTS] || (document2[$$EVENTS] = /* @__PURE__ */ new Set());
     for (let i = 0, l = eventNames.length; i < l; i++) {
@@ -2339,6 +2369,7 @@
 
   // src/webview/providers/vscode-api.ts
   var _vscode = null;
+  var _messageListeners = [];
   function getVscodeApi() {
     if (!_vscode) {
       try {
@@ -2357,149 +2388,33 @@
   function postMessage(message) {
     getVscodeApi().postMessage(message);
   }
+  function onMessage(handler) {
+    _messageListeners.push(handler);
+    return () => {
+      const idx = _messageListeners.indexOf(handler);
+      if (idx >= 0)
+        _messageListeners.splice(idx, 1);
+    };
+  }
+  function dispatchMessage(message) {
+    for (const handler of _messageListeners) {
+      try {
+        handler(message);
+      } catch (err) {
+        console.error("[vscode-api] Message handler error:", err);
+      }
+    }
+  }
+  if (typeof window !== "undefined") {
+    window.addEventListener("message", (event) => {
+      const message = event.data;
+      if (message && typeof message === "object") {
+        dispatchMessage(message);
+      }
+    });
+  }
 
   // src/webview/screens/report-viewer.tsx
-  var SAMPLE_REPORT = {
-    id: "SIR-2026-001",
-    title: "VaultContract Security Audit Report",
-    target: "0x742d35Cc6634C0532925a3b844Bc9e7595f2bD18",
-    chain: "Ethereum Mainnet",
-    date: "2026-07-10",
-    status: "final",
-    author: "Sireen Security Team",
-    version: "1.2.0",
-    executiveSummary: `This report presents the findings of a comprehensive security audit conducted by the Sireen Security Team on the VaultContract smart contract.
-
-A total of 7 findings were identified across various severity levels, including 1 critical, 2 high, 2 medium, and 2 low-severity issues. The most significant finding is a reentrancy vulnerability in the withdraw() function that could allow an attacker to drain the contract's entire balance.
-
-All critical and high-severity issues have been addressed in the latest deployment.`,
-    findings: [
-      {
-        id: 1,
-        severity: "critical",
-        title: "Reentrancy Vulnerability in withdraw() Function",
-        category: "Access Control",
-        status: "fixed",
-        description: "The withdraw() function at line 142 performs an external call before updating the user balance, enabling a reentrancy attack.",
-        impact: "Critical \u2014 Complete loss of contract funds. An attacker can drain all ETH held by the contract.",
-        likelihood: "High \u2014 Exploit is well-documented and straightforward to execute.",
-        evidence: [
-          { title: "Transaction trace showing reentrancy loop", url: "#" },
-          { title: "Proof of concept exploit contract", url: "#" }
-        ],
-        codeSnippets: [
-          {
-            language: "solidity",
-            code: 'function withdraw(uint256 amount) external {\n    require(balances[msg.sender] >= amount);\n    (bool success, ) = msg.sender.call{value: amount}("");\n    require(success, "Transfer failed");\n    balances[msg.sender] -= amount;\n}',
-            lines: "140-145"
-          }
-        ],
-        cweId: "CWE-841",
-        cvssScore: "9.3",
-        recommendation: "Apply the Checks-Effects-Interactions pattern. Update the balance before making the external call."
-      },
-      {
-        id: 2,
-        severity: "high",
-        title: "Unchecked External Call Return Value",
-        category: "Input Validation",
-        status: "fixed",
-        description: "The contract makes external calls using the low-level call() function without checking the return value.",
-        impact: "High \u2014 Failed calls could leave the contract in an inconsistent state.",
-        likelihood: "Medium \u2014 Requires specific scenario where the target call fails.",
-        evidence: [
-          { title: "Static analysis report showing unchecked calls", url: "#" }
-        ],
-        codeSnippets: [
-          {
-            language: "solidity",
-            code: '(bool success, ) = msg.sender.call{value: amount}("");\n// success not checked before state update',
-            lines: "143-144"
-          }
-        ],
-        cweId: "CWE-252",
-        cvssScore: "7.5",
-        recommendation: "Always check the return value of low-level calls."
-      },
-      {
-        id: 3,
-        severity: "high",
-        title: "Insufficient Slippage Protection in swap()",
-        category: "Logic Error",
-        status: "mitigated",
-        description: "The swap() function lacks minimum output amount validation.",
-        impact: "High \u2014 Users could receive significantly less tokens due to MEV/sandwich attacks.",
-        likelihood: "High \u2014 Common attack vector on DEX integrations.",
-        evidence: [],
-        codeSnippets: [],
-        cweId: "CWE-682",
-        cvssScore: "7.0",
-        recommendation: "Implement minimum output amount parameters and deadline checks."
-      },
-      {
-        id: 4,
-        severity: "medium",
-        title: "Centralization Risk in Price Oracle",
-        category: "Centralization",
-        status: "open",
-        description: "The price oracle is controlled by a single admin address that can set arbitrary prices.",
-        impact: "Medium \u2014 Admin can manipulate prices to extract value.",
-        likelihood: "Low \u2014 Requires malicious or compromised admin.",
-        evidence: [],
-        codeSnippets: [],
-        cweId: "CWE-829",
-        cvssScore: "5.3",
-        recommendation: "Consider using a decentralized oracle solution (e.g., Chainlink)."
-      },
-      {
-        id: 5,
-        severity: "medium",
-        title: "Missing Event Emissions on State Changes",
-        category: "Observability",
-        status: "fixed",
-        description: "Several state-changing functions do not emit events.",
-        impact: "Medium \u2014 Reduced transparency and difficulty in tracking state changes.",
-        likelihood: "N/A",
-        evidence: [],
-        codeSnippets: [],
-        cweId: "CWE-778",
-        cvssScore: "5.0",
-        recommendation: "Add events to all state-changing functions."
-      },
-      {
-        id: 6,
-        severity: "low",
-        title: "Unused State Variable",
-        category: "Code Quality",
-        status: "fixed",
-        description: "The feeCollector address variable is declared but never used.",
-        impact: "Low \u2014 Minimal gas waste and code confusion.",
-        likelihood: "N/A",
-        evidence: [],
-        codeSnippets: [],
-        cweId: "CWE-563",
-        cvssScore: "2.1",
-        recommendation: "Remove unused variables or implement the intended functionality."
-      },
-      {
-        id: 7,
-        severity: "low",
-        title: "Outdated Compiler Version",
-        category: "Code Quality",
-        status: "open",
-        description: "Contract compiled with Solidity 0.8.17.",
-        impact: "Low \u2014 Potential missed security fixes in newer compiler versions.",
-        likelihood: "N/A",
-        evidence: [],
-        codeSnippets: [],
-        cweId: "CWE-1104",
-        cvssScore: "1.0",
-        recommendation: "Upgrade to the latest stable Solidity compiler version."
-      }
-    ],
-    summary: { critical: 1, high: 2, medium: 2, low: 2, info: 0 }
-  };
-  var SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"];
   var SEVERITY_CONFIG = {
     critical: { color: "var(--vscode-testing-iconFailed)", label: "Critical" },
     high: { color: "var(--vscode-testing-iconErrored)", label: "High" },
@@ -2533,16 +2448,187 @@ All critical and high-severity issues have been addressed in the latest deployme
         return "default";
     }
   }
+  function formatDate(timestamp) {
+    return new Date(timestamp).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+  }
+  function formatAddress(addr) {
+    if (!addr)
+      return "N/A";
+    if (addr.length <= 12)
+      return addr;
+    return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+  }
+  function pipelineReportToReportData(report) {
+    const findings = [
+      {
+        id: 1,
+        severity: report.hypothesis.severity,
+        title: report.hypothesis.title,
+        category: report.hypothesis.vulnerabilityType,
+        status: report.verdict === "confirmed" ? "confirmed" : report.verdict === "inconclusive" ? "open" : "fixed",
+        description: report.hypothesis.attackVector,
+        impact: report.hypothesis.expectedOutcome,
+        likelihood: report.hypothesis.confidence > 0.7 ? "High" : report.hypothesis.confidence > 0.4 ? "Medium" : "Low",
+        evidence: report.evidence.map((e) => ({ title: e.title, url: e.metadata?.url || "#" })),
+        codeSnippets: report.poc.sourceCode ? [{
+          language: "solidity",
+          code: report.poc.sourceCode,
+          lines: "PoC Test"
+        }] : [],
+        cweId: getCWEForVulnType(report.hypothesis.vulnerabilityType),
+        cvssScore: getCVSSForSeverity(report.hypothesis.severity),
+        recommendation: getRecommendationForVulnType(report.hypothesis.vulnerabilityType)
+      }
+    ];
+    return {
+      id: report.id,
+      title: `Security Analysis: ${report.hypothesis.title}`,
+      target: report.targetAddress || report.target,
+      chain: report.chain,
+      date: formatDate(report.generatedAt),
+      status: "final",
+      author: "Sireen Pipeline",
+      version: "1.0.0",
+      executiveSummary: report.summary,
+      findings,
+      summary: {
+        critical: findings.filter((f) => f.severity === "critical").length,
+        high: findings.filter((f) => f.severity === "high").length,
+        medium: findings.filter((f) => f.severity === "medium").length,
+        low: findings.filter((f) => f.severity === "low").length,
+        info: findings.filter((f) => f.severity === "info").length
+      }
+    };
+  }
+  function getCWEForVulnType(type) {
+    const map = {
+      "reentrancy": "CWE-841",
+      "access-control": "CWE-284",
+      "oracle-manipulation": "CWE-1188",
+      "flash-loan": "CWE-840",
+      "arithmetic": "CWE-682",
+      "logic-error": "CWE-840",
+      "sandwich": "CWE-840",
+      "front-running": "CWE-362",
+      "delegatecall": "CWE-642",
+      "unsafe-typecast": "CWE-704",
+      "other": "CWE-699"
+    };
+    return map[type] || "CWE-699";
+  }
+  function getCVSSForSeverity(severity) {
+    const map = {
+      critical: "9.0-10.0",
+      high: "7.0-8.9",
+      medium: "4.0-6.9",
+      low: "0.1-3.9",
+      info: "0.0"
+    };
+    return map[severity];
+  }
+  function getRecommendationForVulnType(type) {
+    const map = {
+      "reentrancy": "Apply the Checks-Effects-Interactions pattern. Update state before external calls. Use ReentrancyGuard.",
+      "access-control": "Implement proper access controls using Ownable, Roles, or custom modifiers. Avoid tx.origin.",
+      "oracle-manipulation": "Use TWAP oracles, multiple price sources, or commit-reveal schemes.",
+      "flash-loan": "Validate business logic against flash loan scenarios. Use strict price boundaries.",
+      "arithmetic": "Use SafeMath or Solidity 0.8+ built-in overflow checks. Validate inputs.",
+      "logic-error": "Comprehensive unit testing. Formal verification for critical logic.",
+      "sandwich": "Implement slippage protection. Use commit-reveal or MEV-resistant designs.",
+      "front-running": "Use commit-reveal schemes. Avoid predictable transaction ordering.",
+      "delegatecall": "Audit delegatecall targets carefully. Use transparent proxy patterns.",
+      "unsafe-typecast": "Validate type assumptions. Use explicit casting with checks.",
+      "other": "Review the specific vulnerability and apply appropriate mitigation."
+    };
+    return map[type] || "Review the vulnerability and apply appropriate security best practices.";
+  }
+  function convertPipelineReport(payload) {
+    if (!payload)
+      return null;
+    if (payload.report && payload.report.hypothesis) {
+      return payload.report;
+    }
+    if (payload.hypothesis && payload.poc && payload.forgeOutput) {
+      return payload;
+    }
+    return null;
+  }
   function ReportViewer() {
     injectGlobalStyles();
-    const [report] = createSignal(SAMPLE_REPORT);
+    const [report, setReport] = createSignal(null);
+    const [pipelineReport, setPipelineReport] = createSignal(null);
     const [expandedFindingId, setExpandedFindingId] = createSignal(null);
+    const [loading, setLoading] = createSignal(false);
     const toggleFinding = (id) => {
       setExpandedFindingId((prev) => prev === id ? null : id);
     };
     const handleExport = () => {
-      postMessage({ type: "report:export", payload: { id: report().id } });
+      if (pipelineReport()) {
+        postMessage({ type: "report:export", payload: { id: pipelineReport().id, format: "markdown" } });
+      }
     };
+    const handleCopy = () => {
+      if (pipelineReport()) {
+        postMessage({ type: "report:copy", payload: { id: pipelineReport().id, format: "markdown" } });
+      }
+    };
+    onMount(() => {
+      const unsubscribe = onMessage((message) => {
+        if (message.type === "pipeline:complete" && message.payload?.report) {
+          const pipelineReport2 = convertPipelineReport(message.payload);
+          if (pipelineReport2) {
+            setPipelineReport(pipelineReport2);
+            setReport(pipelineReportToReportData(pipelineReport2));
+            setLoading(false);
+          }
+        } else if (message.type === "report:load" && message.payload?.report) {
+          const pipelineReport2 = convertPipelineReport(message.payload.report);
+          if (pipelineReport2) {
+            setPipelineReport(pipelineReport2);
+            setReport(pipelineReportToReportData(pipelineReport2));
+            setLoading(false);
+          }
+        } else if (message.type === "report:request") {
+          setLoading(true);
+        }
+      });
+      postMessage({ type: "report:request", payload: {} });
+      return unsubscribe;
+    });
+    const displayReport = report();
+    const displayPipelineReport = pipelineReport();
+    if (loading && !displayReport) {
+      return /* @__PURE__ */ h("div", { style: {
+        display: "flex",
+        "flex-direction": "column",
+        height: "100%",
+        background: "var(--vscode-editor-background)",
+        color: "var(--vscode-editor-foreground)",
+        "font-family": "var(--vscode-font-family)",
+        "font-size": "var(--vscode-font-size)",
+        "line-height": "var(--vscode-line-height)",
+        "align-items": "center",
+        "justify-content": "center",
+        gap: "16px"
+      } }, /* @__PURE__ */ h(IconLoader, { size: 32, style: { animation: "spin 1s linear infinite" } }), /* @__PURE__ */ h("div", { style: { color: "var(--vscode-descriptionForeground)" } }, "Loading report..."), /* @__PURE__ */ h("style", null, `@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`));
+    }
+    if (!displayReport) {
+      return /* @__PURE__ */ h("div", { style: {
+        display: "flex",
+        "flex-direction": "column",
+        height: "100%",
+        background: "var(--vscode-editor-background)",
+        color: "var(--vscode-editor-foreground)",
+        "font-family": "var(--vscode-font-family)",
+        "font-size": "var(--vscode-font-size)",
+        "line-height": "var(--vscode-line-height)",
+        "align-items": "center",
+        "justify-content": "center",
+        gap: "16px",
+        padding: "32px",
+        "text-align": "center"
+      } }, /* @__PURE__ */ h(IconFile, { size: 48, style: { color: "var(--vscode-descriptionForeground)", opacity: 0.5 } }), /* @__PURE__ */ h("div", { style: { color: "var(--vscode-descriptionForeground)" } }, "No report loaded"), /* @__PURE__ */ h("div", { style: { "font-size": "12px", color: "var(--vscode-descriptionForeground)", opacity: 0.7 } }, "Run a pipeline analysis to generate a report"));
+    }
     return /* @__PURE__ */ h("div", { style: {
       display: "flex",
       "flex-direction": "column",
@@ -2563,67 +2649,23 @@ All critical and high-severity issues have been addressed in the latest deployme
       position: "sticky",
       top: 0,
       "z-index": 10
-    } }, /* @__PURE__ */ h("div", { style: { display: "flex", "align-items": "center", gap: "8px" } }, /* @__PURE__ */ h(IconShield, { size: 16 }), /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("span", { style: { "font-size": "var(--vscode-font-size)", "font-weight": 600 } }, "Report Viewer"), /* @__PURE__ */ h("div", { style: { "font-size": "11px", color: "var(--vscode-descriptionForeground)", "margin-top": 1 } }, report().id, " \xB7 v", report().version)), /* @__PURE__ */ h(Badge, { variant: report().status === "final" ? "success" : report().status === "in-review" ? "info" : "warning", size: "sm" }, report().status)), /* @__PURE__ */ h(Button, { variant: "primary", size: "sm", icon: /* @__PURE__ */ h(IconDownload, { size: 12 }), onClick: handleExport }, "Export")), /* @__PURE__ */ h("div", { style: { padding: "16px", "max-width": 960, width: "100%", "box-sizing": "border-box", margin: "0 auto" } }, /* @__PURE__ */ h("div", { style: { display: "flex", "flex-direction": "column", gap: "12px" } }, /* @__PURE__ */ h(Panel, { variant: "bordered", padding: "md" }, /* @__PURE__ */ h("h2", { style: { "font-size": "12px", "font-weight": 600, margin: "0 0 10px 0" } }, "Report Metadata"), /* @__PURE__ */ h("div", { style: { display: "grid", "grid-template-columns": "1fr 1fr", gap: "8px" } }, /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("div", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)", "margin-bottom": 2 } }, "Target"), /* @__PURE__ */ h("span", { style: { "font-size": "var(--vscode-font-size)", "font-family": "var(--vscode-editor-font-family)", background: "var(--vscode-textBlockQuote-background)", padding: "2px 6px", "border-radius": "2px" } }, report().target.slice(0, 10), "...", report().target.slice(-6))), /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("div", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)", "margin-bottom": 2 } }, "Chain"), /* @__PURE__ */ h("div", { style: { "font-size": "var(--vscode-font-size)" } }, report().chain)), /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("div", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)", "margin-bottom": 2 } }, "Date"), /* @__PURE__ */ h("div", { style: { "font-size": "var(--vscode-font-size)", display: "flex", "align-items": "center", gap: "4px" } }, /* @__PURE__ */ h(IconClock, { size: 12 }), " ", report().date)), /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("div", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)", "margin-bottom": 2 } }, "Author"), /* @__PURE__ */ h("div", { style: { "font-size": "var(--vscode-font-size)" } }, report().author)))), /* @__PURE__ */ h(Panel, { variant: "bordered", padding: "md" }, /* @__PURE__ */ h("h2", { style: { "font-size": "12px", "font-weight": 600, margin: "0 0 8px 0" } }, "Severity Summary"), /* @__PURE__ */ h("div", { style: { display: "flex", gap: "6px", "flex-wrap": "wrap" } }, /* @__PURE__ */ h(For, { each: SEVERITY_ORDER }, (severity) => {
-      const count = report().summary[severity];
-      if (count === 0)
-        return null;
-      const cfg = SEVERITY_CONFIG[severity];
-      return /* @__PURE__ */ h("div", { style: { display: "flex", "align-items": "center", gap: "4px", padding: "4px 8px", background: "var(--vscode-textBlockQuote-background)", "border-radius": "2px", border: "1px solid var(--vscode-panel-border)" } }, /* @__PURE__ */ h("span", { style: { width: 8, height: 8, "border-radius": "50%", background: cfg.color } }), /* @__PURE__ */ h("span", { style: { "font-size": "10px", "font-weight": 600, color: cfg.color } }, count), /* @__PURE__ */ h("span", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)" } }, cfg.label));
-    }), /* @__PURE__ */ h("div", { style: { display: "flex", "align-items": "center", gap: "4px", padding: "4px 8px", background: "var(--vscode-textBlockQuote-background)", "border-radius": "2px", border: "1px solid var(--vscode-panel-border)" } }, /* @__PURE__ */ h("span", { style: { "font-size": "10px", "font-weight": 600 } }, report().findings.length), /* @__PURE__ */ h("span", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)" } }, "Total")))), /* @__PURE__ */ h(Panel, { variant: "bordered", padding: "md" }, /* @__PURE__ */ h("h2", { style: { "font-size": "12px", "font-weight": 600, margin: "0 0 8px 0", display: "flex", "align-items": "center", gap: "6px" } }, /* @__PURE__ */ h(IconEye, { size: 14 }), " Executive Summary"), /* @__PURE__ */ h("div", { style: { "font-size": "var(--vscode-font-size)", color: "var(--vscode-descriptionForeground)", "line-height": 1.6, "white-space": "pre-line" } }, report().executiveSummary)), /* @__PURE__ */ h("div", { style: { display: "flex", "flex-direction": "column", gap: "8px" } }, /* @__PURE__ */ h("h2", { style: { "font-size": "12px", "font-weight": 600, margin: 0, display: "flex", "align-items": "center", gap: "6px" } }, /* @__PURE__ */ h(IconAlert, { size: 14 }), " Findings (", report().findings.length, ")"), /* @__PURE__ */ h(For, { each: report().findings }, (finding) => {
+    } }, /* @__PURE__ */ h("div", { style: { display: "flex", "align-items": "center", gap: "8px" } }, /* @__PURE__ */ h(IconShield, { size: 16 }), /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("span", { style: { "font-size": "var(--vscode-font-size)", "font-weight": 600 } }, "Report Viewer"), /* @__PURE__ */ h("div", { style: { "font-size": "11px", color: "var(--vscode-descriptionForeground)", "margin-top": 1 } }, displayReport.id, " \xB7 v", displayReport.version)), /* @__PURE__ */ h(Badge, { variant: displayReport.status === "final" ? "success" : displayReport.status === "in-review" ? "info" : "warning", size: "sm" }, displayReport.status), displayPipelineReport && /* @__PURE__ */ h(Badge, { variant: displayPipelineReport.verdict === "confirmed" ? "success" : displayPipelineReport.verdict === "inconclusive" ? "warning" : "danger", size: "sm", style: { marginLeft: "8px" } }, displayPipelineReport.verdict.toUpperCase())), /* @__PURE__ */ h("div", { style: { display: "flex", gap: "8px" } }, /* @__PURE__ */ h(Button, { variant: "ghost", size: "sm", icon: /* @__PURE__ */ h(IconCopy, { size: 12 }), onClick: handleCopy, title: "Copy Report" }, "Copy"), /* @__PURE__ */ h(Button, { variant: "primary", size: "sm", icon: /* @__PURE__ */ h(IconDownload, { size: 12 }), onClick: handleExport }, "Export"))), /* @__PURE__ */ h("div", { style: { padding: "16px", "max-width": 960, width: "100%", "box-sizing": "border-box", margin: "0 auto" } }, /* @__PURE__ */ h("div", { style: { display: "flex", "flex-direction": "column", gap: "12px" } }, /* @__PURE__ */ h(Panel, { variant: "bordered", padding: "md" }, /* @__PURE__ */ h("h2", { style: { "font-size": "12px", "font-weight": 600, margin: "0 0 10px 0" } }, "Report Metadata"), /* @__PURE__ */ h("div", { style: { display: "grid", "grid-template-columns": "1fr 1fr", gap: "8px" } }, /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("div", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)", "margin-bottom": 2 } }, "Target"), /* @__PURE__ */ h("span", { style: { "font-size": "var(--vscode-font-size)", "font-family": "var(--vscode-editor-font-family)", background: "var(--vscode-textBlockQuote-background)", padding: "2px 6px", "border-radius": "2px" } }, formatAddress(displayReport.target))), /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("div", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)", "margin-bottom": 2 } }, "Chain"), /* @__PURE__ */ h("span", null, displayReport.chain)), /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("div", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)", "margin-bottom": 2 } }, "Date"), /* @__PURE__ */ h("span", null, displayReport.date)), /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("div", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)", "margin-bottom": 2 } }, "Author"), /* @__PURE__ */ h("span", null, displayReport.author)), displayPipelineReport && /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("div", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)", "margin-bottom": 2 } }, "Vulnerability Type"), /* @__PURE__ */ h("span", null, displayPipelineReport.hypothesis.vulnerabilityType)), displayPipelineReport && /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("div", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)", "margin-bottom": 2 } }, "Confidence"), /* @__PURE__ */ h("span", null, (displayPipelineReport.hypothesis.confidence * 100).toFixed(0), "%")), displayPipelineReport && /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("div", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)", "margin-bottom": 2 } }, "Honest Signal"), /* @__PURE__ */ h(Badge, { variant: displayPipelineReport.honestSignal.confirmed ? "success" : "danger", size: "sm" }, displayPipelineReport.honestSignal.confirmed ? "CONFIRMED" : "NOT CONFIRMED")), displayPipelineReport && /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("div", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)", "margin-bottom": 2 } }, "PoC Compilation"), /* @__PURE__ */ h(Badge, { variant: displayPipelineReport.poc.compilationSuccess ? "success" : "danger", size: "sm" }, displayPipelineReport.poc.compilationSuccess ? "SUCCESS" : "FAILED")), displayPipelineReport && /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("div", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)", "margin-bottom": 2 } }, "Forge Exit Code"), /* @__PURE__ */ h("span", { style: { "font-family": "var(--vscode-editor-font-family)" } }, displayPipelineReport.forgeOutput.exitCode)))), /* @__PURE__ */ h(Panel, { variant: "bordered", padding: "md" }, /* @__PURE__ */ h("h2", { style: { "font-size": "12px", "font-weight": 600, margin: "0 0 10px 0" } }, "Executive Summary"), /* @__PURE__ */ h("div", { style: { "font-size": "var(--vscode-font-size)", "line-height": 1.6, color: "var(--vscode-editor-foreground)" } }, displayReport.executiveSummary)), displayPipelineReport && /* @__PURE__ */ h(Panel, { variant: "bordered", padding: "md" }, /* @__PURE__ */ h("h2", { style: { "font-size": "12px", "font-weight": 600, margin: "0 0 10px 0", display: "flex", "align-items": "center", gap: "8px" } }, /* @__PURE__ */ h(IconShield, { size: 14 }), "Honest Signal Verification"), /* @__PURE__ */ h("div", { style: { display: "grid", "grid-template-columns": "repeat(auto-fill, minmax(200px, 1fr))", gap: "8px" } }, displayPipelineReport.honestSignal.conditions.map((cond, i) => /* @__PURE__ */ h("div", { key: i, style: { padding: "8px", background: "var(--vscode-textBlockQuote-background)", "border-radius": "2px" } }, /* @__PURE__ */ h("div", { style: { display: "flex", "align-items": "center", gap: "6px", marginBottom: "4px" } }, /* @__PURE__ */ h(Badge, { variant: cond.satisfied ? "success" : "danger", size: "sm" }, cond.satisfied ? "\u2713" : "\u2717"), /* @__PURE__ */ h("span", { style: { "font-size": "11px", "font-weight": 500 } }, cond.name.replace(/_/g, " "))), /* @__PURE__ */ h("div", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)" } }, cond.detail)))), /* @__PURE__ */ h("div", { style: { marginTop: "12px", padding: "8px", background: "var(--vscode-textBlockQuote-background)", "border-radius": "2px", "font-size": "11px", color: "var(--vscode-descriptionForeground)" } }, /* @__PURE__ */ h("strong", null, "Explanation:"), " ", displayPipelineReport.honestSignal.explanation), /* @__PURE__ */ h("div", { style: { marginTop: "8px", padding: "8px", background: "var(--vscode-textBlockQuote-background)", "border-radius": "2px", "font-size": "11px", color: "var(--vscode-descriptionForeground)" } }, /* @__PURE__ */ h("strong", null, "Confidence: "), " ", (displayPipelineReport.honestSignal.confidence * 100).toFixed(0), "%")), /* @__PURE__ */ h(Panel, { variant: "bordered", padding: "md" }, /* @__PURE__ */ h("h2", { style: { "font-size": "12px", "font-weight": 600, margin: "0 0 10px 0" } }, "Findings (", displayReport.findings.length, ")"), /* @__PURE__ */ h(For, { each: displayReport.findings }, (finding) => {
       const isExpanded = expandedFindingId() === finding.id;
       const cfg = SEVERITY_CONFIG[finding.severity];
-      return /* @__PURE__ */ h(
-        Panel,
-        {
-          variant: "bordered",
-          padding: "none",
-          onClick: () => toggleFinding(finding.id),
-          style: { cursor: "pointer", transition: "box-shadow 120ms ease", border: `1px solid ${expandedFindingId() === finding.id ? cfg.color + "44" : "var(--vscode-panel-border)"}` }
-        },
-        /* @__PURE__ */ h("div", { style: {
-          display: "flex",
-          "align-items": "center",
-          gap: "10px",
-          padding: "10px 14px"
-        } }, /* @__PURE__ */ h("div", { style: { width: 3, height: 28, "border-radius": "2px", background: cfg.color, "flex-shrink": 0 } }), /* @__PURE__ */ h(Badge, { variant: severityBadgeVariant(finding.severity), size: "sm" }, cfg.label), /* @__PURE__ */ h("div", { style: { flex: 1, "min-width": 0 } }, /* @__PURE__ */ h("div", { style: { "font-size": "var(--vscode-font-size)", "font-weight": 600 } }, finding.title), /* @__PURE__ */ h("div", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)", display: "flex", gap: "8px" } }, /* @__PURE__ */ h("span", null, finding.cweId), /* @__PURE__ */ h("span", null, "\xB7"), /* @__PURE__ */ h("span", null, "CVSS ", finding.cvssScore), /* @__PURE__ */ h("span", null, "\xB7"), /* @__PURE__ */ h("span", null, finding.category))), /* @__PURE__ */ h(Badge, { variant: statusBadgeVariant(finding.status), size: "sm" }, finding.status), /* @__PURE__ */ h("span", { style: {
-          color: "var(--vscode-descriptionForeground)",
-          "font-size": "9px",
-          transition: "transform 120ms",
-          transform: isExpanded ? "rotate(180deg)" : "rotate(0deg)"
-        } }, "\u25BC")),
-        /* @__PURE__ */ h(Show, { when: isExpanded }, /* @__PURE__ */ h("div", { style: { "border-top": "1px solid var(--vscode-panel-border)", padding: "10px 14px", display: "flex", "flex-direction": "column", gap: "10px" } }, /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("h4", { style: { "font-size": "10px", "font-weight": 600, margin: "0 0 6px 0", color: "var(--vscode-descriptionForeground)" } }, "Description"), /* @__PURE__ */ h("p", { style: { margin: 0, "font-size": "var(--vscode-font-size)", color: "var(--vscode-descriptionForeground)", "line-height": 1.5 } }, finding.description)), /* @__PURE__ */ h("div", { style: { display: "grid", "grid-template-columns": "1fr 1fr", gap: "8px" } }, /* @__PURE__ */ h("div", { style: { padding: "8px", background: "var(--vscode-textBlockQuote-background)", "border-radius": "2px" } }, /* @__PURE__ */ h("h4", { style: { "font-size": "10px", "font-weight": 600, margin: "0 0 6px 0", color: "var(--vscode-descriptionForeground)" } }, "Impact"), /* @__PURE__ */ h("p", { style: { margin: 0, "font-size": "10px", color: "var(--vscode-descriptionForeground)", "line-height": 1.5 } }, finding.impact)), /* @__PURE__ */ h("div", { style: { padding: "8px", background: "var(--vscode-textBlockQuote-background)", "border-radius": "2px" } }, /* @__PURE__ */ h("h4", { style: { "font-size": "10px", "font-weight": 600, margin: "0 0 6px 0", color: "var(--vscode-descriptionForeground)" } }, "Likelihood"), /* @__PURE__ */ h("p", { style: { margin: 0, "font-size": "10px", color: "var(--vscode-descriptionForeground)", "line-height": 1.5 } }, finding.likelihood))), /* @__PURE__ */ h(Show, { when: finding.codeSnippets.length > 0 }, /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("h4", { style: { "font-size": "10px", "font-weight": 600, margin: "0 0 6px 0", color: "var(--vscode-descriptionForeground)" } }, "Code"), /* @__PURE__ */ h(For, { each: finding.codeSnippets }, (snippet) => /* @__PURE__ */ h("div", { style: { background: "var(--vscode-textCodeBlock-background)", "border-radius": "2px", overflow: "hidden", "margin-bottom": "6px" } }, /* @__PURE__ */ h("div", { style: { display: "flex", "align-items": "center", "justify-content": "space-between", padding: "4px 8px", background: "var(--vscode-textBlockQuote-background)", "border-bottom": "1px solid var(--vscode-panel-border)", "font-size": "10px", color: "var(--vscode-descriptionForeground)" } }, /* @__PURE__ */ h("span", null, snippet.language), /* @__PURE__ */ h("span", null, "Lines ", snippet.lines)), /* @__PURE__ */ h("pre", { style: { margin: 0, padding: "8px", "font-size": "10px", "font-family": "var(--vscode-editor-font-family)", "line-height": 1.5, overflow: "auto" } }, snippet.code))))), /* @__PURE__ */ h(Show, { when: finding.evidence.length > 0 }, /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("h4", { style: { "font-size": "10px", "font-weight": 600, margin: "0 0 6px 0", color: "var(--vscode-descriptionForeground)" } }, "Evidence"), /* @__PURE__ */ h(For, { each: finding.evidence }, (ev) => /* @__PURE__ */ h(
-          "div",
-          {
-            style: { display: "flex", "align-items": "center", gap: "6px", "font-size": "var(--vscode-font-size)", color: "var(--vscode-textLink-foreground)", cursor: "pointer", padding: "4px 8px", "border-radius": "2px" },
-            onClick: (e) => {
-              e.stopPropagation();
-              postMessage({ type: "report:openEvidence", payload: { url: ev.url } });
-            }
-          },
-          /* @__PURE__ */ h(IconExternalLink, { size: 12 }),
-          /* @__PURE__ */ h("span", null, ev.title)
-        )))), /* @__PURE__ */ h("div", { style: { padding: "8px", background: "color-mix(in srgb, var(--vscode-testing-iconPassed) 12%, transparent)", "border-radius": "2px", border: "1px solid var(--vscode-panel-border)" } }, /* @__PURE__ */ h("h4", { style: { "font-size": "10px", "font-weight": 600, margin: "0 0 6px 0", color: "var(--vscode-testing-iconPassed)", display: "flex", "align-items": "center", gap: "6px" } }, /* @__PURE__ */ h(IconCheck, { size: 12 }), " Recommendation"), /* @__PURE__ */ h("p", { style: { margin: 0, "font-size": "var(--vscode-font-size)", color: "var(--vscode-descriptionForeground)", "line-height": 1.5 } }, finding.recommendation))))
-      );
-    })))), /* @__PURE__ */ h("div", { style: {
-      padding: "10px 16px",
-      "border-top": "1px solid var(--vscode-panel-border)",
-      background: "var(--vscode-panel-background)",
-      display: "flex",
-      "align-items": "center",
-      "justify-content": "center",
-      gap: "12px",
-      "font-size": "10px",
-      color: "var(--vscode-descriptionForeground)"
-    } }, /* @__PURE__ */ h(For, { each: SEVERITY_ORDER }, (severity) => {
-      const count = report().summary[severity];
-      if (count === 0)
-        return null;
-      return /* @__PURE__ */ h("span", { style: { display: "flex", "align-items": "center", gap: "4px" } }, /* @__PURE__ */ h("span", { style: { width: 6, height: 6, "border-radius": "50%", background: SEVERITY_CONFIG[severity].color, display: "inline-block" } }), SEVERITY_CONFIG[severity].label, ": ", count);
-    }), /* @__PURE__ */ h("span", null, "Total: ", report().findings.length, " findings")));
-  }
-  var root = document.getElementById("root");
-  if (root) {
-    render(() => /* @__PURE__ */ h(ReportViewer, null), root);
+      return /* @__PURE__ */ h("div", { style: { "border": "1px solid var(--vscode-panel-border)", "border-radius": "2px", overflow: "hidden" } }, /* @__PURE__ */ h("div", { style: {
+        display: "flex",
+        "align-items": "center",
+        gap: "10px",
+        padding: "10px 14px",
+        background: "var(--vscode-panel-background)"
+      } }, /* @__PURE__ */ h("div", { style: { width: 3, height: 28, "border-radius": "2px", background: cfg.color, "flex-shrink": 0 } }), /* @__PURE__ */ h(Badge, { variant: severityBadgeVariant(finding.severity), size: "sm" }, cfg.label), /* @__PURE__ */ h("div", { style: { flex: 1, "min-width": 0 } }, /* @__PURE__ */ h("div", { style: { "font-size": "var(--vscode-font-size)", "font-weight": 600 } }, finding.title), /* @__PURE__ */ h("div", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)", display: "flex", gap: "8px" } }, /* @__PURE__ */ h("span", null, finding.cweId), /* @__PURE__ */ h("span", null, "\xB7"), /* @__PURE__ */ h("span", null, "CVSS ", finding.cvssScore), /* @__PURE__ */ h("span", null, "\xB7"), /* @__PURE__ */ h("span", null, finding.category))), /* @__PURE__ */ h(Badge, { variant: statusBadgeVariant(finding.status), size: "sm" }, finding.status), /* @__PURE__ */ h("span", { style: {
+        color: "var(--vscode-descriptionForeground)",
+        "font-size": "9px",
+        transition: "transform 120ms",
+        transform: isExpanded ? "rotate(180deg)" : "rotate(0deg)",
+        cursor: "pointer"
+      }, onClick: () => toggleFinding(finding.id) }, "\u25BC")), /* @__PURE__ */ h(Show, { when: isExpanded }, /* @__PURE__ */ h("div", { style: { "border-top": "1px solid var(--vscode-panel-border)", padding: "10px 14px", display: "flex", "flex-direction": "column", gap: "10px" } }, /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("h4", { style: { "font-size": "10px", "font-weight": 600, margin: "0 0 6px 0", color: "var(--vscode-descriptionForeground)" } }, "Description"), /* @__PURE__ */ h("p", { style: { margin: 0, "font-size": "var(--vscode-font-size)", color: "var(--vscode-descriptionForeground)", "line-height": 1.5 } }, finding.description)), /* @__PURE__ */ h("div", { style: { display: "grid", "grid-template-columns": "1fr 1fr", gap: "8px" } }, /* @__PURE__ */ h("div", { style: { padding: "8px", background: "var(--vscode-textBlockQuote-background)", "border-radius": "2px" } }, /* @__PURE__ */ h("h4", { style: { "font-size": "10px", "font-weight": 600, margin: "0 0 6px 0", color: "var(--vscode-descriptionForeground)" } }, "Impact"), /* @__PURE__ */ h("p", { style: { margin: 0, "font-size": "10px", color: "var(--vscode-descriptionForeground)", "line-height": 1.5 } }, finding.impact)), /* @__PURE__ */ h("div", { style: { padding: "8px", background: "var(--vscode-textBlockQuote-background)", "border-radius": "2px" } }, /* @__PURE__ */ h("h4", { style: { "font-size": "10px", "font-weight": 600, margin: "0 0 6px 0", color: "var(--vscode-descriptionForeground)" } }, "Likelihood"), /* @__PURE__ */ h("p", { style: { margin: 0, "font-size": "10px", color: "var(--vscode-descriptionForeground)", "line-height": 1.5 } }, finding.likelihood))), /* @__PURE__ */ h(Show, { when: finding.codeSnippets.length > 0 }, /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("h4", { style: { "font-size": "10px", "font-weight": 600, margin: "0 0 6px 0", color: "var(--vscode-descriptionForeground)" } }, "Proof of Concept"), /* @__PURE__ */ h(For, { each: finding.codeSnippets }, (snippet) => /* @__PURE__ */ h("div", { style: { background: "var(--vscode-textCodeBlock-background)", "border-radius": "2px", overflow: "hidden", "margin-bottom": "6px" } }, /* @__PURE__ */ h("div", { style: { display: "flex", "align-items": "center", "justify-content": "space-between", padding: "4px 8px", background: "var(--vscode-textBlockQuote-background)" } }, /* @__PURE__ */ h("span", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)" } }, snippet.language), /* @__PURE__ */ h("span", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)" } }, snippet.lines)), /* @__PURE__ */ h("pre", { style: { margin: 0, padding: "8px", overflow: "auto", "font-size": "11px", "font-family": "var(--vscode-editor-font-family)", "line-height": 1.5 } }, snippet.code))))), /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("h4", { style: { "font-size": "10px", "font-weight": 600, margin: "0 0 6px 0", color: "var(--vscode-descriptionForeground)" } }, "Recommendation"), /* @__PURE__ */ h("p", { style: { margin: 0, "font-size": "var(--vscode-font-size)", color: "var(--vscode-descriptionForeground)", "line-height": 1.5 } }, finding.recommendation)), finding.evidence.length > 0 && /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("h4", { style: { "font-size": "10px", "font-weight": 600, margin: "0 0 6px 0", color: "var(--vscode-descriptionForeground)" } }, "Evidence"), /* @__PURE__ */ h(For, { each: finding.evidence }, (e) => /* @__PURE__ */ h("a", { href: e.url, target: "_blank", rel: "noopener noreferrer", style: { display: "block", padding: "6px 8px", marginBottom: "4px", background: "var(--vscode-textBlockQuote-background)", "border-radius": "2px", "font-size": "11px", color: "var(--vscode-textLink-foreground)", "text-decoration": "none" } }, /* @__PURE__ */ h(IconExternalLink, { size: 10, style: { display: "inline-block", marginRight: "6px", verticalAlign: "middle" } }), e.title))))));
+    })), displayPipelineReport && /* @__PURE__ */ h(Panel, { variant: "bordered", padding: "md" }, /* @__PURE__ */ h("h2", { style: { "font-size": "12px", "font-weight": 600, margin: "0 0 10px 0", display: "flex", "align-items": "center", gap: "8px" } }, /* @__PURE__ */ h(IconTerminal, { size: 14 }), "Pipeline Execution Details"), /* @__PURE__ */ h("div", { style: { display: "grid", "grid-template-columns": "repeat(auto-fill, minmax(200px, 1fr))", gap: "8px" } }, /* @__PURE__ */ h("div", { style: { padding: "8px", background: "var(--vscode-textBlockQuote-background)", "border-radius": "2px" } }, /* @__PURE__ */ h("div", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)", marginBottom: "2px" } }, "PoC State"), /* @__PURE__ */ h("div", { style: { "font-weight": 600 } }, displayPipelineReport.poc.state.toUpperCase())), /* @__PURE__ */ h("div", { style: { padding: "8px", background: "var(--vscode-textBlockQuote-background)", "border-radius": "2px" } }, /* @__PURE__ */ h("div", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)", marginBottom: "2px" } }, "Compilation Attempts"), /* @__PURE__ */ h("div", { style: { "font-weight": 600 } }, displayPipelineReport.poc.compilationAttempts)), /* @__PURE__ */ h("div", { style: { padding: "8px", background: "var(--vscode-textBlockQuote-background)", "border-radius": "2px" } }, /* @__PURE__ */ h("div", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)", marginBottom: "2px" } }, "Test Results"), /* @__PURE__ */ h("div", { style: { "font-weight": 600 } }, displayPipelineReport.forgeOutput.testResults.filter((t) => t.status === "pass").length, " passed / ", displayPipelineReport.forgeOutput.testResults.length, " total")), /* @__PURE__ */ h("div", { style: { padding: "8px", background: "var(--vscode-textBlockQuote-background)", "border-radius": "2px" } }, /* @__PURE__ */ h("div", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)", marginBottom: "2px" } }, "Gas Used"), /* @__PURE__ */ h("div", { style: { "font-weight": 600, "font-family": "var(--vscode-editor-font-family)" } }, displayPipelineReport.forgeOutput.gasReport?.total?.toLocaleString() || "N/A")), /* @__PURE__ */ h("div", { style: { padding: "8px", background: "var(--vscode-textBlockQuote-background)", "border-radius": "2px" } }, /* @__PURE__ */ h("div", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)", marginBottom: "2px" } }, "Attacker Profit"), /* @__PURE__ */ h("div", { style: { "font-weight": 600, color: displayPipelineReport.exploitResult.success ? "var(--vscode-testing-iconPassed)" : "var(--vscode-descriptionForeground)" } }, displayPipelineReport.exploitResult.attackerProfit, " ", displayPipelineReport.exploitResult.profitToken)), /* @__PURE__ */ h("div", { style: { padding: "8px", background: "var(--vscode-textBlockQuote-background)", "border-radius": "2px" } }, /* @__PURE__ */ h("div", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)", marginBottom: "2px" } }, "Money Flow Entries"), /* @__PURE__ */ h("div", { style: { "font-weight": 600 } }, displayPipelineReport.moneyFlow.length)))), displayPipelineReport && displayPipelineReport.timeline.length > 0 && /* @__PURE__ */ h(Panel, { variant: "bordered", padding: "md" }, /* @__PURE__ */ h("h2", { style: { "font-size": "12px", "font-weight": 600, margin: "0 0 10px 0", display: "flex", "align-items": "center", gap: "8px" } }, /* @__PURE__ */ h(IconClock, { size: 14 }), "Investigation Timeline"), /* @__PURE__ */ h(For, { each: displayPipelineReport.timeline }, (event) => /* @__PURE__ */ h("div", { key: event.id, style: { display: "flex", gap: "12px", padding: "8px 0", "border-bottom": "1px solid var(--vscode-panel-border)" } }, /* @__PURE__ */ h("div", { style: { width: 12, height: 12, "border-radius": "50%", background: "var(--vscode-button-background)", "margin-top": 4, flexShrink: 0 } }), /* @__PURE__ */ h("div", { style: { flex: 1 } }, /* @__PURE__ */ h("div", { style: { display: "flex", "align-items": "center", gap: "8px" } }, /* @__PURE__ */ h("span", { style: { "font-weight": 600 } }, event.title), /* @__PURE__ */ h("span", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)" } }, formatDate(event.timestamp)), event.severity && /* @__PURE__ */ h(Badge, { variant: severityBadgeVariant(event.severity), size: "xs" }, event.severity)), /* @__PURE__ */ h("div", { style: { "font-size": "11px", color: "var(--vscode-descriptionForeground)", marginTop: 2 } }, event.description))))), displayPipelineReport && displayPipelineReport.moneyFlow.length > 0 && /* @__PURE__ */ h(Panel, { variant: "bordered", padding: "md" }, /* @__PURE__ */ h("h2", { style: { "font-size": "12px", "font-weight": 600, margin: "0 0 10px 0", display: "flex", "align-items": "center", gap: "8px" } }, /* @__PURE__ */ h(IconGraph, { size: 14 }), "Money Flow"), /* @__PURE__ */ h(For, { each: displayPipelineReport.moneyFlow }, (flow) => /* @__PURE__ */ h("div", { key: `${flow.from}-${flow.to}-${flow.amount}`, style: { display: "flex", "align-items": "center", gap: "8px", padding: "6px 0", "font-size": "11px" } }, /* @__PURE__ */ h("span", { style: { "font-family": "var(--vscode-editor-font-family)", color: "var(--vscode-descriptionForeground)" } }, formatAddress(flow.from)), /* @__PURE__ */ h(IconArrowRight, { size: 12, style: { color: "var(--vscode-descriptionForeground)" } }), /* @__PURE__ */ h("span", { style: { "font-family": "var(--vscode-editor-font-family)" } }, formatAddress(flow.to)), /* @__PURE__ */ h("span", { style: { color: "var(--vscode-descriptionForeground)" } }, "\xB7"), /* @__PURE__ */ h("span", { style: { "font-weight": 500 } }, flow.amount, " ", flow.token), /* @__PURE__ */ h("span", { style: { color: "var(--vscode-descriptionForeground)" } }, "(", flow.type, ")")))))));
   }
 })();
 //# sourceMappingURL=report-viewer.js.map

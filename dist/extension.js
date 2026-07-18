@@ -318,16 +318,27 @@ var SidebarProvider = class {
   _initializeAIClient() {
     const config = vscode2.workspace.getConfiguration("sireen");
     const provider = config.get("aiProvider") || "openrouter";
-    const apiKey = config.get("aiApiKey") || "";
     const model = config.get("aiModel") || "openai/o3-mini";
-    if (apiKey) {
-      this._aiClient = new AIClient({ provider, apiKey, model });
-    } else {
-      console.warn("[SidebarProvider] AI API key not configured \u2014 AI chat will not work");
-    }
+    this._context.secrets.get("sireen.aiApiKey").then((apiKey) => {
+      if (apiKey) {
+        this._aiClient = new AIClient({ provider, apiKey, model });
+      } else {
+        console.warn("[SidebarProvider] AI API key not configured in SecretStorage \u2014 AI chat will not work");
+      }
+    });
   }
   _reinitializeAIClient() {
-    this._initializeAIClient();
+    const config = vscode2.workspace.getConfiguration("sireen");
+    const provider = config.get("aiProvider") || "openrouter";
+    const model = config.get("aiModel") || "openai/o3-mini";
+    this._context.secrets.get("sireen.aiApiKey").then((apiKey) => {
+      if (apiKey) {
+        this._aiClient = new AIClient({ provider, apiKey, model });
+      } else {
+        this._aiClient = void 0;
+        console.warn("[SidebarProvider] AI API key not configured in SecretStorage \u2014 AI chat will not work");
+      }
+    });
   }
   setPipelineManager(pm) {
     this._pipelineManager = pm;
@@ -490,6 +501,9 @@ var SidebarProvider = class {
         break;
       case "error":
         vscode2.window.showErrorMessage(message.payload?.message || "Sireen: An error occurred");
+        break;
+      case "info":
+        vscode2.window.showInformationMessage(message.payload?.message || "Sireen: Information");
         break;
       default:
         console.warn(`[SidebarProvider] Unhandled message type: ${message.type}`);
@@ -795,6 +809,7 @@ contract VulnerableVault {
           type: "pipeline:complete",
           payload: { report: result.report }
         });
+        this._context.workspaceState.update(`report:${result.report.id}`, result.report);
         vscode2.commands.executeCommand("sireen.openWarRoom");
       } else {
         this.postMessage({
@@ -915,7 +930,15 @@ Format: ${payload.format}
     const config = vscode2.workspace.getConfiguration("sireen");
     const updates = Object.entries(payload).map(([key, value]) => [key, value]);
     for (const [key, value] of updates) {
-      config.update(key, value, vscode2.ConfigurationTarget.Workspace);
+      if (key === "aiApiKey") {
+        if (value) {
+          this._context.secrets.store("sireen.aiApiKey", value);
+        } else {
+          this._context.secrets.delete("sireen.aiApiKey");
+        }
+      } else {
+        config.update(key, value, vscode2.ConfigurationTarget.Workspace);
+      }
     }
     if (payload.aiApiKey !== void 0 || payload.aiModel !== void 0 || payload.aiProvider !== void 0) {
       this._reinitializeAIClient();
@@ -928,7 +951,6 @@ Format: ${payload.format}
     const settings = {};
     const keys = [
       "aiProvider",
-      "aiApiKey",
       "aiModel",
       "forgePath",
       "forkRpcUrl",
@@ -963,7 +985,10 @@ Format: ${payload.format}
     for (const key of keys) {
       settings[key] = config.get(key);
     }
-    this.postMessage({ type: "settings:loaded", payload: { settings } });
+    this._context.secrets.get("sireen.aiApiKey").then((apiKey) => {
+      settings.aiApiKey = apiKey ? "***" : "";
+      this.postMessage({ type: "settings:loaded", payload: { settings } });
+    });
   }
   handleSettingsExport(payload) {
     const config = vscode2.workspace.getConfiguration("sireen");
@@ -1054,6 +1079,14 @@ var WarRoomProvider = class {
   postMessage(message) {
     warRoomPanel?.webview.postMessage(message);
   }
+  /** Send pipeline report to War Room for display */
+  showReport(report) {
+    this.show();
+    this.postMessage({
+      type: "report:display",
+      payload: { report }
+    });
+  }
   handleMessage(message) {
     switch (message.type) {
       case "ready":
@@ -1063,10 +1096,10 @@ var WarRoomProvider = class {
         vscode3.commands.executeCommand("sireen.runPipeline");
         break;
       case "report:export":
-        this.exportReport(message.payload?.reportId);
+        this.exportReport(message.payload?.report);
         break;
       case "report:copy":
-        this.copyReport(message.payload?.format);
+        this.copyReport(message.payload?.report, message.payload?.format);
         break;
       case "error":
         vscode3.window.showErrorMessage(message.payload?.message || "Sireen: An error occurred");
@@ -1088,42 +1121,37 @@ var WarRoomProvider = class {
       }
     });
   }
-  async exportReport(reportId) {
-    if (!reportId) {
-      vscode3.window.showErrorMessage("Sireen: No report ID provided for export");
-      return;
-    }
-    const report = this.context.workspaceState.get(`report:${reportId}`);
+  async exportReport(report) {
     if (!report) {
-      vscode3.window.showErrorMessage(`Sireen: Report "${reportId}" not found`);
+      vscode3.window.showErrorMessage("Sireen: No report provided for export");
       return;
     }
     const format = await vscode3.window.showQuickPick(
-      ["Markdown", "HTML", "JSON"],
+      ["Markdown", "HTML", "JSON", "SARIF"],
       { placeHolder: "Select export format" }
     );
     if (!format)
       return;
     const content = this.formatReport(report, format.toLowerCase());
-    const doc = await vscode3.workspace.openTextDocument({
-      content,
-      language: format.toLowerCase()
+    const uri = await vscode3.window.showSaveDialog({
+      defaultUri: vscode3.Uri.file(`sireen-report-${report.id}.${format.toLowerCase()}`),
+      filters: {
+        "Report": [format.toLowerCase()]
+      }
     });
-    await vscode3.window.showTextDocument(doc, { preview: false });
+    if (uri) {
+      await vscode3.workspace.fs.writeFile(uri, Buffer.from(content, "utf8"));
+      vscode3.window.showInformationMessage(`Report exported to ${uri.fsPath}`);
+    }
   }
-  copyReport(format) {
-    const keys = this.context.workspaceState.keys().filter((k) => k.startsWith("report:"));
-    if (keys.length === 0) {
-      vscode3.window.showWarningMessage("No reports available to copy");
+  copyReport(report, format) {
+    if (!report) {
+      vscode3.window.showWarningMessage("No report available to copy");
       return;
     }
-    const latestKey = keys.sort().pop();
-    const report = this.context.workspaceState.get(latestKey);
-    if (report) {
-      const content = this.formatReport(report, format || "markdown");
-      vscode3.env.clipboard.writeText(content);
-      vscode3.window.showInformationMessage(`Report copied as ${format || "Markdown"}`);
-    }
+    const content = this.formatReport(report, format || "markdown");
+    vscode3.env.clipboard.writeText(content);
+    vscode3.window.showInformationMessage(`Report copied as ${format || "Markdown"}`);
   }
   formatReport(report, format) {
     switch (format) {
@@ -1131,87 +1159,127 @@ var WarRoomProvider = class {
         return JSON.stringify(report, null, 2);
       case "html":
         return this.reportToHtml(report);
+      case "sarif":
+        return this.reportToSarif(report);
       case "markdown":
       default:
         return this.reportToMarkdown(report);
     }
   }
   reportToMarkdown(report) {
-    const findings = report.findings || [];
-    const pocResults = report.pocResults || [];
+    const findings = report.evidence || [];
     const honestSignal = report.honestSignal;
-    return `# ${report.target?.name || "Contract"} \u2014 Exploit Verification Report
+    return `# ${report.target} \u2014 Exploit Verification Report
 
-**Generated:** ${new Date(report.timestamp).toLocaleString()}
-**Target:** ${report.target?.name || "Unknown"} (${report.target?.chain || "ethereum"})
-**Verdict:** ${(report.verdict || "unknown").toUpperCase()}
-**Confidence:** ${report.confidence ? `${Math.round(report.confidence * 100)}%` : "N/A"}
+**Generated:** ${new Date(report.generatedAt).toLocaleString()}
+**Target:** ${report.targetAddress || report.target} (${report.chain})
+**Verdict:** ${report.verdict.toUpperCase()}
+**Confidence:** ${Math.round(report.honestSignal.confidence * 100)}%
 
 ---
 
 ## Executive Summary
 
-${report.summary || "No summary available."}
+${report.summary}
 
 ---
 
-## Findings (${findings.length})
+## Attack Hypothesis
 
-${findings.map((f, i) => this.findingToMarkdown(f, i + 1)).join("\n\n---\n\n")}
+**Title:** ${report.hypothesis.title}
+**Type:** ${report.hypothesis.vulnerabilityType}
+**Affected Contracts:** ${report.hypothesis.affectedContracts.join(", ") || "N/A"}
+**Severity:** ${report.hypothesis.severity.toUpperCase()}
+**Confidence:** ${Math.round(report.hypothesis.confidence * 100)}%
+
+**Attack Vector:**
+${report.hypothesis.attackVector}
+
+**Preconditions:**
+${report.hypothesis.preconditions.map((p) => `- ${p}`).join("\n")}
+
+**Expected Outcome:**
+${report.hypothesis.expectedOutcome}
 
 ---
 
-## Proof of Concept Results
+## Proof of Concept
 
-${pocResults.map((p) => this.pocToMarkdown(p)).join("\n\n")}
+**State:** ${report.poc.state.toUpperCase()}
+**Compilation Attempts:** ${report.poc.compilationAttempts}
+**Compilation Success:** ${report.poc.compilationSuccess ? "YES" : "NO"}
+
+${!report.poc.compilationSuccess && report.poc.errors.length > 0 ? `**Compilation Errors:**
+\`\`\`
+${report.poc.errors.join("\n")}
+\`\`\`
+` : ""}
+
+**PoC Source Code:**
+\`\`\`solidity
+${report.poc.sourceCode}
+\`\`\`
+
+---
+
+## Forge Execution Results
+
+**Exit Code:** ${report.forgeOutput.exitCode}
+**Duration:** ${report.forgeOutput.duration}ms
+**Test Results:** ${report.forgeOutput.testResults.filter((t) => t.status === "pass").length} passed / ${report.forgeOutput.testResults.length} total
+
+${report.forgeOutput.testResults.map((t) => `- ${t.name}: ${t.status.toUpperCase()}${t.gasUsed ? ` (${t.gasUsed} gas)` : ""}${t.error ? ` \u2014 ${t.error}` : ""}`).join("\n")}
+
+${report.forgeOutput.gasReport ? `**Gas Report:**
+- Total: ${report.forgeOutput.gasReport.total.toLocaleString()} gas
+- By Function: ${JSON.stringify(report.forgeOutput.gasReport.byFunction, null, 2)}` : ""}
+
+---
+
+## Exploit Verification
+
+**Success:** ${report.exploitResult.success ? "YES" : "NO"}
+**Attacker Profit:** ${report.exploitResult.attackerProfit} ${report.exploitResult.profitToken} ($${report.exploitResult.profitUSD.toLocaleString()})
+**Money Flow Entries:** ${report.exploitResult.moneyFlow.length}
+
+**Token Balances:**
+${Object.entries(report.exploitResult.tokenBalances).map(
+      ([addr, tokens]) => `${addr}: ${Object.entries(tokens).map(([sym, bal]) => `${bal} ${sym}`).join(", ")}`
+    ).join("\n")}
+
+**Money Flow:**
+${report.exploitResult.moneyFlow.map((f) => `- ${f.from} \u2192 ${f.to}: ${f.amount} ${f.token} (${f.type})${f.txIndex !== void 0 ? ` [tx ${f.txIndex}]` : ""}`).join("\n") || "No money flow recorded"}
+
+**Reverted Transactions:**
+${report.exploitResult.revertedTransactions.map((t) => `- tx ${t.index}: ${t.reason} (${t.gasUsed} gas)`).join("\n") || "None"}
 
 ---
 
 ## Honest Signal Validation
 
-**Passed:** ${honestSignal?.passed ? "YES" : "NO"}
-**Confidence:** ${honestSignal?.confidence ? `${Math.round(honestSignal.confidence * 100)}%` : "N/A"}
-**Critique:** ${honestSignal?.critique || "No critique available"}
+**Confirmed:** ${honestSignal.confirmed ? "YES \u2705" : "NO \u274C"}
+**Confidence:** ${Math.round(honestSignal.confidence * 100)}%
+
+**Conditions:**
+${honestSignal.conditions.map((c) => `- ${c.name}: ${c.satisfied ? "\u2705 SATISFIED" : "\u274C NOT SATISFIED"} \u2014 ${c.detail}`).join("\n")}
+
+**Explanation:** ${honestSignal.explanation}
+
+---
+
+## Timeline
+
+${report.timeline.map((e) => `- [${new Date(e.timestamp).toLocaleTimeString()}] ${e.title}: ${e.description}`).join("\n")}
 
 ---
 
 ## Evidence
 
-${report.evidence?.map((e) => `- [${e.type}] ${e.description} (${e.url || "N/A"})`).join("\n") || "No evidence recorded"}
+${report.evidence.map((e) => `- [${e.type}] ${e.title}: ${e.description}`).join("\n") || "No evidence recorded"}
 
 ---
 
 *Report generated by Sireen \u2014 AI-Powered Smart Contract Exploit Verification*
-`;
-  }
-  findingToMarkdown(f, index) {
-    return `### ${index}. ${f.title || f.name || "Unnamed Finding"}
-
-**Severity:** ${f.severity || "unknown".toUpperCase()}
-**Category:** ${f.category || "unknown"}
-**Location:** ${f.location || "N/A"}
-**Confidence:** ${f.confidence ? `${Math.round(f.confidence * 100)}%` : "N/A"}
-
-${f.description || "No description"}
-
-**Attack Vector:** ${f.attackVector || "Not specified"}
-
-**Remediation:** ${f.remediation || "Not specified"}
-`;
-  }
-  pocToMarkdown(p) {
-    return `#### PoC: ${p.findingId || p.name || "Unknown"}
-
-**Status:** ${p.passed ? "PASSED \u2705" : "FAILED \u274C"}
-**Gas Used:** ${p.gasUsed || "N/A"}
-**Block Number:** ${p.blockNumber || "N/A"}
-
-\`\`\`solidity
-${p.code || "// No PoC code available"}
-\`\`\`
-
-**Execution Log:**
-${p.logs?.join("\n") || "No logs available"}
 `;
   }
   reportToHtml(report) {
@@ -1237,6 +1305,59 @@ ${p.logs?.join("\n") || "No logs available"}
 ${md.replace(/^# (.*$)/gm, "<h1>$1</h1>").replace(/^## (.*$)/gm, "<h2>$1</h2>").replace(/^### (.*$)/gm, "<h3>$1</h3>").replace(/^#### (.*$)/gm, "<h4>$1</h4>").replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>").replace(/\n\n/g, "<p></p>").replace(/\n/g, "<br>").replace(/\`\`\`(\w+)?\n([\s\S]*?)\n\`\`\`/g, "<pre><code>$2</code></pre>").replace(/\`([^\`]+)\`/g, "<code>$1</code>")}
 </body>
 </html>`;
+  }
+  reportToSarif(report) {
+    const sarif = {
+      version: "2.1.0",
+      $schema: "https://json.schemastore.org/sarif-2.1.0.json",
+      runs: [{
+        tool: {
+          driver: {
+            name: "Sireen",
+            version: "0.2.0",
+            informationUri: "https://github.com/sireen-security/sireen",
+            rules: []
+          }
+        },
+        results: [{
+          ruleId: report.hypothesis.vulnerabilityType,
+          level: this.severityToSarifLevel(report.hypothesis.severity),
+          message: {
+            text: `${report.hypothesis.title}: ${report.hypothesis.attackVector}`
+          },
+          locations: [{
+            physicalLocation: {
+              artifactLocation: {
+                uri: report.targetAddress || report.target
+              }
+            }
+          }],
+          properties: {
+            confidence: report.honestSignal.confidence,
+            verdict: report.verdict,
+            attackerProfit: report.exploitResult.attackerProfit,
+            profitToken: report.exploitResult.profitToken,
+            confirmed: report.honestSignal.confirmed
+          }
+        }],
+        columnKind: "utf16"
+      }]
+    };
+    return JSON.stringify(sarif, null, 2);
+  }
+  severityToSarifLevel(severity) {
+    switch (severity) {
+      case "critical":
+      case "high":
+        return "error";
+      case "medium":
+        return "warning";
+      case "low":
+      case "info":
+        return "note";
+      default:
+        return "none";
+    }
   }
 };
 

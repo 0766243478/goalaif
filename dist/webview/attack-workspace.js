@@ -2432,6 +2432,7 @@
 
   // src/webview/providers/vscode-api.ts
   var _vscode = null;
+  var _messageListeners = [];
   function getVscodeApi() {
     if (!_vscode) {
       try {
@@ -2449,6 +2450,23 @@
   }
   function postMessage(message) {
     getVscodeApi().postMessage(message);
+  }
+  function dispatchMessage(message) {
+    for (const handler of _messageListeners) {
+      try {
+        handler(message);
+      } catch (err) {
+        console.error("[vscode-api] Message handler error:", err);
+      }
+    }
+  }
+  if (typeof window !== "undefined") {
+    window.addEventListener("message", (event) => {
+      const message = event.data;
+      if (message && typeof message === "object") {
+        dispatchMessage(message);
+      }
+    });
   }
 
   // src/webview/screens/attack-workspace.tsx
@@ -2722,7 +2740,7 @@ contract Phishing {
       padding: "8px 12px",
       "border-bottom": "1px solid var(--vscode-panel-border)",
       background: "var(--vscode-panel-background)"
-    } }, /* @__PURE__ */ h("div", { style: { display: "flex", "align-items": "center", gap: "8px" } }, /* @__PURE__ */ h(IconZap, { size: 16, style: { color: "var(--vscode-testing-iconFailed)" } }), /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("span", { style: { "font-weight": 600 } }, "Attack Workspace"), /* @__PURE__ */ h("div", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)" } }, vectors().length, " vectors \xB7 ", Object.keys(results()).length, " runs"))), /* @__PURE__ */ h("div", { style: { display: "flex", gap: "4px" } }, /* @__PURE__ */ h(Button, { variant: "secondary", size: "sm", icon: /* @__PURE__ */ h(IconRefreshCw, { size: 12 }), onClick: () => postMessage({ type: "attack:refresh" }) }, "Refresh"))), /* @__PURE__ */ h("div", { style: {
+    } }, /* @__PURE__ */ h("div", { style: { display: "flex", "align-items": "center", gap: "8px" } }, /* @__PURE__ */ h(IconZap, { size: 16, style: { color: "var(--vscode-testing-iconFailed)" } }), /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("span", { style: { "font-weight": 600 } }, "Attack Workspace"), /* @__PURE__ */ h("div", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)" } }, vectors().length, " vectors \xB7 ", Object.keys(results()).length, " runs"))), /* @__PURE__ */ h("div", { style: { display: "flex", "align-items": "center", gap: "8px" } }, /* @__PURE__ */ h(Badge, { variant: "warning", size: "sm" }, "Experimental"), /* @__PURE__ */ h(Button, { variant: "secondary", size: "sm", icon: /* @__PURE__ */ h(IconRefreshCw, { size: 12 }), onClick: () => postMessage({ type: "attack:refresh" }) }, "Refresh"))), /* @__PURE__ */ h("div", { style: {
       display: "flex",
       gap: "1px",
       padding: "4px 8px",
@@ -2811,13 +2829,19 @@ contract Phishing {
         )), /* @__PURE__ */ h("p", { style: { margin: 0, "font-size": "10px", color: "var(--vscode-descriptionForeground)", "line-height": 1.5, "margin-bottom": "8px" } }, vector.description), /* @__PURE__ */ h("div", { style: { display: "flex", "flex-wrap": "wrap", gap: "4px" } }, vector.tags.slice(0, 5).map((tag) => /* @__PURE__ */ h("span", { key: tag, style: { "font-size": "9px", padding: "1px 6px", background: "var(--vscode-textBlockQuote-background)", "border-radius": "2px", color: "var(--vscode-descriptionForeground)" } }, tag)))), /* @__PURE__ */ h("div", { style: { display: "flex", "flex-direction": "column", gap: "4px", "align-items": "flex-end" } }, /* @__PURE__ */ h(
           Button,
           {
-            variant: isRunning ? "secondary" : "primary",
+            variant: "secondary",
             size: "sm",
-            icon: isRunning ? /* @__PURE__ */ h(IconPause, { size: 12 }) : /* @__PURE__ */ h(IconPlay, { size: 12 }),
-            onClick: () => handleRunVector(vector),
-            disabled: isRunning
+            icon: /* @__PURE__ */ h(IconPlay, { size: 12 }),
+            onClick: () => {
+              postMessage({
+                type: "info",
+                payload: { message: "Attack Workspace: Run feature is experimental and requires full pipeline integration." }
+              });
+            },
+            disabled: true,
+            title: "Experimental: Run feature requires full pipeline integration"
           },
-          isRunning ? "Running..." : "Run"
+          "Run (Experimental)"
         ), result && result.status !== "pending" && /* @__PURE__ */ h(Button, { variant: "ghost", size: "sm", onClick: () => setSelectedVectorId(vector.id) }, /* @__PURE__ */ h(IconEye, { size: 12 }), " View")))
       );
     }), filteredVectors().length === 0 && /* @__PURE__ */ h("div", { style: { padding: "24px", "text-align": "center", color: "var(--vscode-descriptionForeground)" } }, /* @__PURE__ */ h(IconSearch, { style: { width: 32, height: 32, marginBottom: "8px", opacity: 0.3 } }), /* @__PURE__ */ h("p", null, "No attack vectors match your filter")))), /* @__PURE__ */ h(Show, { when: tab() === "results" }, () => /* @__PURE__ */ h("div", { style: { padding: "12px", display: "flex", "flex-direction": "column", gap: "8px" } }, /* @__PURE__ */ h(For, { each: Object.entries(results()).sort((a, b) => b[1].startTime - a[1].startTime) }, ([id, result]) => {

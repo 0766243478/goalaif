@@ -2320,6 +2320,7 @@
 
   // src/webview/providers/vscode-api.ts
   var _vscode = null;
+  var _messageListeners = [];
   function getVscodeApi() {
     if (!_vscode) {
       try {
@@ -2337,6 +2338,23 @@
   }
   function postMessage(message) {
     getVscodeApi().postMessage(message);
+  }
+  function dispatchMessage(message) {
+    for (const handler of _messageListeners) {
+      try {
+        handler(message);
+      } catch (err) {
+        console.error("[vscode-api] Message handler error:", err);
+      }
+    }
+  }
+  if (typeof window !== "undefined") {
+    window.addEventListener("message", (event) => {
+      const message = event.data;
+      if (message && typeof message === "object") {
+        dispatchMessage(message);
+      }
+    });
   }
 
   // src/webview/screens/knowledge-graph.tsx
@@ -2489,7 +2507,7 @@
       padding: "8px 12px",
       "border-bottom": "1px solid var(--vscode-panel-border)",
       background: "var(--vscode-panel-background)"
-    } }, /* @__PURE__ */ h("div", { style: { display: "flex", "align-items": "center", gap: "8px" } }, /* @__PURE__ */ h(IconGraph, { size: 16 }), /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("span", { style: { "font-weight": 600 } }, "Knowledge Graph"), /* @__PURE__ */ h("div", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)" } }, graph().target.slice(0, 10), "...", graph().target.slice(-6), " \xB7 ", graph().chain))), /* @__PURE__ */ h("div", { style: { display: "flex", gap: "4px" } }, /* @__PURE__ */ h(Button, { variant: "secondary", size: "sm", icon: /* @__PURE__ */ h(IconRefreshCw, { size: 12 }), onClick: handleRunAnalysis }, "Analyze"), /* @__PURE__ */ h(Button, { variant: "secondary", size: "sm", icon: /* @__PURE__ */ h(IconDownload, { size: 12 }), onClick: handleExport }, "Export"))), /* @__PURE__ */ h("div", { style: {
+    } }, /* @__PURE__ */ h("div", { style: { display: "flex", "align-items": "center", gap: "8px" } }, /* @__PURE__ */ h(IconGraph, { size: 16 }), /* @__PURE__ */ h("div", null, /* @__PURE__ */ h("span", { style: { "font-weight": 600 } }, "Knowledge Graph"), /* @__PURE__ */ h("div", { style: { "font-size": "10px", color: "var(--vscode-descriptionForeground)" } }, graph().target.slice(0, 10), "...", graph().target.slice(-6), " \xB7 ", graph().chain))), /* @__PURE__ */ h("div", { style: { display: "flex", "align-items": "center", gap: "8px" } }, /* @__PURE__ */ h(Badge, { variant: "warning", size: "sm" }, "Experimental"), /* @__PURE__ */ h(Button, { variant: "secondary", size: "sm", icon: /* @__PURE__ */ h(IconRefreshCw, { size: 12 }), onClick: handleRunAnalysis }, "Analyze"), /* @__PURE__ */ h(Button, { variant: "secondary", size: "sm", icon: /* @__PURE__ */ h(IconDownload, { size: 12 }), onClick: handleExport }, "Export"))), /* @__PURE__ */ h("div", { style: {
       display: "flex",
       "align-items": "center",
       gap: "8px",
