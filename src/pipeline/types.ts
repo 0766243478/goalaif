@@ -51,6 +51,29 @@ export type PipelineStage =
 
 export type PipelineStatus = 'idle' | 'running' | 'completed' | 'failed' | 'cancelled';
 
+// ---------------------------------------------------------------------------
+// PoC State Machine
+// ---------------------------------------------------------------------------
+export type PoCState =
+  | 'pending'
+  | 'generating'
+  | 'generated'
+  | 'compiling'
+  | 'compiled'
+  | 'compilation_failed'
+  | 'executing'
+  | 'executed'
+  | 'execution_failed'
+  | 'verified'
+  | 'failed';
+
+export interface PoCStateTransition {
+  from: PoCState;
+  to: PoCState;
+  timestamp: number;
+  metadata?: Record<string, unknown>;
+}
+
 export interface PipelineEvent {
   stage: PipelineStage;
   status: 'running' | 'completed' | 'failed';
@@ -92,6 +115,17 @@ export interface PoCResult {
   compilationAttempts: number;
   compilationSuccess: boolean;
   errors: string[];
+  // PoC State Machine
+  state: PoCState;
+  stateHistory: PoCStateTransition[];
+  lastError?: string;
+  verificationDetails?: {
+    exploitReproduced: boolean;
+    stateChangeVerified: boolean;
+    attackerGainVerified: boolean;
+    profitAmount?: string;
+    profitToken?: string;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -166,11 +200,30 @@ export interface HonestCondition {
   detail: string;
 }
 
+// Strict verification conditions (ALL must be true for confirmed=true)
+export const HONEST_SIGNAL_CONDITIONS: readonly string[] = [
+  'poc_generated',
+  'poc_compiled',
+  'forge_executed',
+  'exploit_reproduced',
+  'state_change_verified',
+  'attacker_gain_verified',
+] as const;
+
+export type HonestSignalCondition = (typeof HONEST_SIGNAL_CONDITIONS)[number];
+
 export interface HonestSignal {
   confirmed: boolean;
   confidence: number; // 0–1
   conditions: HonestCondition[];
   explanation: string;
+  // Individual condition status for UI display
+  pocGenerated: boolean;
+  pocCompiled: boolean;
+  forgeExecuted: boolean;
+  exploitReproduced: boolean;
+  stateChangeVerified: boolean;
+  attackerGainVerified: boolean;
 }
 
 export type Verdict = 'confirmed' | 'not_confirmed' | 'inconclusive';

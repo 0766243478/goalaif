@@ -318,4 +318,42 @@ Fix ALL errors and output the COMPLETE fixed test file.`;
       // Ignore cleanup errors
     }
   }
+
+  /**
+   * Compile an existing PoC file at the given path.
+   * Used by PipelineManager for the auto-fix loop.
+   */
+  async compile(
+    filePath: string,
+    options: { forgePath: string; dockerEnabled: boolean; dockerImage: string }
+  ): Promise<{ success: boolean; errors: string[] }> {
+    const workspaceDir = path.dirname(path.dirname(filePath));
+    
+    return new Promise((resolve) => {
+      try {
+        const forgeCmd = options.dockerEnabled
+          ? `docker run --rm -v "${workspaceDir}:/project" -w /project ${options.dockerImage} forge build --via-ir`
+          : `${options.forgePath} build --root "${workspaceDir}" --via-ir`;
+
+        execSync(forgeCmd, {
+          cwd: workspaceDir,
+          timeout: 120_000,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+        resolve({ success: true, errors: [] });
+      } catch (err: any) {
+        const stderr = err.stderr?.toString() || '';
+        const stdout = err.stdout?.toString() || '';
+        const errorLines = (stderr + stdout)
+          .split('\n')
+          .filter((l: string) =>
+            l.includes('Error') ||
+            l.includes('error') ||
+            l.includes('Warning') ||
+            l.includes('Compiler')
+          );
+        resolve({ success: false, errors: errorLines.length > 0 ? errorLines : [stderr] });
+      }
+    });
+  }
 }

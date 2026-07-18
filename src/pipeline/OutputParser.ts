@@ -256,4 +256,67 @@ export class OutputParser {
     }
     return 'failure';
   }
+
+  /**
+   * Parse forge output into structured data including traces, state changes, and transfers.
+   * Used by HonestSignal for strict verification.
+   */
+  parse(forgeOutput: ForgeOutput): {
+    traces: any[];
+    stateChanges: any[];
+    transfers: any[];
+  } {
+    const raw = forgeOutput.raw;
+    const traces: any[] = [];
+    const stateChanges: any[] = [];
+    const transfers: any[] = [];
+
+    // Extract call traces from forge output (traces are shown with -vvv)
+    // Pattern: "call <address>.<method>() returned <value>"
+    const callTraceRegex = /\[(?:TRACE|CALL|STATICCALL|DELEGATECALL)\]\s+(?:from\s+)?(0x[a-fA-F0-9]{40}|\w+)\s+(?:to\s+)?(0x[a-fA-F0-9]{40}|\w+)\s+([^\s]+)\([^)]*\)\s+(?:returned|reverted)?\s*([^\n]*)/gi;
+    
+    let match: RegExpExecArray | null;
+    while ((match = callTraceRegex.exec(raw)) !== null) {
+      traces.push({
+        from: match[1],
+        to: match[2],
+        method: match[3],
+        result: match[4] || 'success',
+        timestamp: Date.now(),
+      });
+    }
+
+    // Extract storage changes (state changes)
+    // Pattern: "slot <slot> changed from <old> to <new>"
+    const storageChangeRegex = /slot\s+(0x[a-fA-F0-9]{64}|\d+)\s+changed\s+from\s+(\S+)\s+to\s+(\S+)/gi;
+    while ((match = storageChangeRegex.exec(raw)) !== null) {
+      stateChanges.push({
+        slot: match[1],
+        oldValue: match[2],
+        newValue: match[3],
+        change: match[3] !== match[2],
+        timestamp: Date.now(),
+      });
+    }
+
+    // Extract Transfer events from logs
+    // Pattern: "Transfer(from, to, value)"
+    const transferEventRegex = /Transfer\s*\(\s*(?:from:\s*)?(0x[a-fA-F0-9]{40}|\w+)\s*,\s*(?:to:\s*)?(0x[a-fA-F0-9]{40}|\w+)\s*,\s*(?:value:\s*)?(\d+)\s*\)/gi;
+    while ((match = transferEventRegex.exec(raw)) !== null) {
+      transfers.push({
+        from: match[1],
+        to: match[2],
+        amount: match[3],
+        token: 'ETH', // default, could be ERC20
+        type: 'transfer',
+        timestamp: Date.now(),
+      });
+    }
+
+    // Also parse from money flow extraction (existing logic)
+    const moneyFlow = this.extractMoneyFlow(raw);
+    transfers.push(...moneyFlow);
+
+    return { traces, stateChanges, transfers };
+  }
 }

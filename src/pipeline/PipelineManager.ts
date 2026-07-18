@@ -1,12 +1,37 @@
 // ============================================================================
 // SIREEN — Pipeline Manager
 // ============================================================================
-// Orchestrates the entire exploit verification pipeline:
+// Orchestrates the entire exploit verification pipeline with bulletproof
+// state machine, auto-fix compilation retries, and proper cancellation.
 //
-//   Target → Hypothesis → PoC Generation → Compilation Retry →
-//   Forge Test → Output Parsing → Honest Signal → Report
+// Pipeline Flow:
 //
-// Emits events at each stage for progress tracking in the UI.
+//   Target
+//     ↓
+//   HYPOTHESIS           (AI analyzes contract → AttackHypothesis)
+//     ↓
+//   POC_GENERATION      (AI generates Foundry test.sol → PoCResult)
+//     ↓
+//   POC_COMPILATION     (forge build → PoCResult.state = compiled|compilation_failed)
+//     ↓                      ↓
+//     └─→ AUTO_FIX  ←──────┘  (max 3 retries: analyze error → LLM fix → recompile)
+//     ↓
+//   FORGE_EXECUTION     (forge test --json → ForgeOutput)
+//     ↓
+//   OUTPUT_PARSING      (parse JSON → test results, traces, gas)
+//     ↓
+//   VERIFICATION        (HonestSignal: 6 conditions ALL must pass)
+//     ↓
+//   REPORT_GENERATION   (build report with evidence, money flow)
+//     ↓
+//   COMPLETED / FAILED / CANCELLED
+//
+// Key Principles:
+// 1. NEVER collapse states — each transition is explicit
+// 2. Auto-fix has strict retry limit (config.maxRetries, default 3)
+// 3. Cancellation via AbortSignal at every await point
+// 4. State persisted for resume capability
+// 5. HonestSignal.confirmed = true ONLY if all 6 conditions satisfied
 
 import * as path from 'path';
 import * as fs from 'fs';
@@ -34,28 +59,10 @@ import type {
   InvestigationReport,
   MoneyFlowEntry,
   PipelineSession,
+  PoCState,
+  PoCStateTransition,
+  PoCResult,
 } from './types';
-
-/**
- * Session state for persistence and resume capability.
- */
-export interface PipelineSession {
-  id: string;
-  target: PipelineTarget;
-  sourceCode: string;
-  forkUrl?: string;
-  currentStage: PipelineStage;
-  status: PipelineStatus;
-  error?: string;
-  hypothesis?: AttackHypothesis;
-  pocResult?: any;
-  forgeOutput?: ForgeOutput;
-  exploitResult?: ExploitResult;
-  honestSignal?: HonestSignal;
-  report?: InvestigationReport;
-  createdAt: number;
-  updatedAt: number;
-}
 
 const HYPOTHESIS_SYSTEM_PROMPT = `You are an expert smart contract security researcher. Analyze the given Solidity source code and produce a structured attack hypothesis.
 
@@ -73,10 +80,19 @@ Output ONLY valid JSON with this exact structure:
 
 Be specific about the attack vector. Focus on real, exploitable vulnerabilities. Do NOT invent vulnerabilities that don't exist. If the code appears secure, set confidence to 0 and explain why.`;
 
-/**
- * Options for running the pipeline.
- */
-export interface PipelineRunOptions {
+const POC_FIX_SYSTEM_PROMPT = `You are an expert Foundry/Solidity developer. The user will provide a Solidity test file that failed to compile, along with the compiler error output.
+
+Your task: Fix the compilation errors and return the corrected Solidity code.
+
+Rules:
+- ONLY return the fixed Solidity code wrapped in \`\`\`solidity ... \`\`\` fences
+- Do NOT change the test logic — only fix syntax, imports, type errors, missing definitions
+- Preserve all test logic, assertions, and exploit mechanics
+- Use Foundry std library (forge-std) and cheatcodes (vm.) appropriately
+- Target Solidity ^0.8.20
+- Ensure the test contract inherits from "Test" and has a "testExploit" function`;
+
+interface PipelineRunOptions {
   target: PipelineTarget;
   sourceCode: string;
   forkUrl?: string;
@@ -84,10 +100,7 @@ export interface PipelineRunOptions {
   signal?: AbortSignal;
 }
 
-/**
- * Result of a pipeline run.
- */
-export interface PipelineRunResult {
+interface PipelineRunResult {
   success: boolean;
   report?: InvestigationReport;
   error?: string;
@@ -113,6 +126,9 @@ export class PipelineManager {
   private _sessionSourceCode = '';
   private _sessionForkUrl?: string;
   private _stagesCompleted: PipelineStage[] = [];
+  
+  /** Abort controller for cancellation */
+  private _abortController: AbortController | null = null;
 
   /** Optional VS Code context for session persistence */
   private _context?: vscode.ExtensionContext;
@@ -125,6 +141,12 @@ export class PipelineManager {
   }
   get error(): string | undefined {
     return this._error;
+  }
+  get isRunning(): boolean {
+    return this._status === 'running';
+  }
+  get abortSignal(): AbortSignal | undefined {
+    return this._abortController?.signal;
   }
 
   constructor(config: PipelineConfig) {
@@ -152,7 +174,7 @@ export class PipelineManager {
     if (config.dockerEnabled) {
       this.dockerSandbox = new DockerSandbox({
         image: config.dockerImage,
-        timeout: config.forgePath ? 180_000 : 120_000,
+        timeout: 180_000,
       });
     }
   }
@@ -160,6 +182,16 @@ export class PipelineManager {
   /** Set VS Code extension context for session persistence */
   setContext(context: vscode.ExtensionContext): void {
     this._context = context;
+  }
+
+  /** Cancel a running pipeline */
+  cancel(): void {
+    if (this._abortController && this._status === 'running') {
+      this._abortController.abort();
+      this._status = 'cancelled';
+      this._error = 'Pipeline cancelled by user';
+      this._currentStage = 'cancelled';
+    }
   }
 
   /**
@@ -217,14 +249,18 @@ export class PipelineManager {
   }
 
   /**
-   * Run the full exploit verification pipeline.
+   * Run the full exploit verification pipeline with bulletproof state machine.
    */
   async run(options: PipelineRunOptions): Promise<PipelineRunResult> {
+    // Create new abort controller for this run
+    this._abortController = new AbortController();
+    const signal = options.signal || this._abortController.signal;
+
     this._status = 'running';
     this._currentStage = 'initializing';
     this._error = undefined;
 
-    const { target, sourceCode, forkUrl, onEvent, signal } = options;
+    const { target, sourceCode, forkUrl, onEvent } = options;
     const sessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     const workspaceDir = path.join(
@@ -242,6 +278,7 @@ export class PipelineManager {
       status: 'running',
       createdAt: Date.now(),
       updatedAt: Date.now(),
+      stagesCompleted: [],
     };
     await this.saveSession(session);
 
@@ -250,11 +287,29 @@ export class PipelineManager {
       await this.saveSession(session);
     };
 
+    const emit = async (event: Omit<PipelineEvent, 'timestamp'>) => {
+      const fullEvent: PipelineEvent = { ...event, timestamp: Date.now() };
+      onEvent?.(fullEvent);
+      
+      // Also update session with current stage
+      if (event.stage !== this._currentStage) {
+        this._currentStage = event.stage;
+        await updateSession({ currentStage: event.stage });
+      }
+    };
+
     // Retry configuration
     const maxRetries = this.config.maxRetries || 3;
     const retryDelay = (attempt: number) => Math.min(1000 * 2 ** attempt, 10000);
 
-    // Helper to run a stage with retries
+    // Helper: check abort signal
+    const checkAbort = () => {
+      if (signal?.aborted) {
+        throw new Error('Pipeline cancelled');
+      }
+    };
+
+    // Helper: run a stage with retries and abort checking
     const runStageWithRetry = async <T>(
       stageName: PipelineStage,
       fn: () => Promise<T>,
@@ -262,27 +317,24 @@ export class PipelineManager {
     ): Promise<T> => {
       let lastError: Error;
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        checkAbort();
         try {
           return await fn();
         } catch (err) {
           lastError = err instanceof Error ? err : new Error(String(err));
           
           if (attempt < maxRetries) {
-            this.emit(onEvent, {
+            await emit({
               stage: stageName,
               status: 'failed',
               message: `Attempt ${attempt + 1} failed: ${lastError.message}. Retrying in ${retryDelay(attempt)}ms...`,
               data: { error: lastError.message, attempt: attempt + 1 },
-              timestamp: Date.now(),
             });
             
             onRetry?.(attempt + 1, lastError);
             
             await new Promise(resolve => setTimeout(resolve, retryDelay(attempt)));
-            
-            if (signal?.aborted) {
-              throw new Error('Pipeline cancelled during retry');
-            }
+            checkAbort();
             continue;
           }
           throw lastError;
@@ -291,13 +343,21 @@ export class PipelineManager {
       throw lastError!;
     };
 
+    // Helper: transition PoC state
+    const transitionPoCState = (pocResult: PoCResult, from: PoCState, to: PoCState, metadata?: Record<string, unknown>) => {
+      const transition: PoCStateTransition = { from, to, timestamp: Date.now(), metadata };
+      pocResult.state = to;
+      pocResult.stateHistory.push(transition);
+    };
+
     try {
-      // ─── Stage 1: Hypothesis ──────────────────────────────────────────
-      this.emit(onEvent, {
+      // ═══════════════════════════════════════════════════════════════════
+      // STAGE 1: HYPOTHESIS
+      // ═══════════════════════════════════════════════════════════════════
+      await emit({
         stage: 'hypothesis',
         status: 'running',
         message: 'Analyzing target and forming attack hypothesis...',
-        timestamp: Date.now(),
       });
       this._currentStage = 'hypothesis';
       await updateSession({ currentStage: 'hypothesis' });
@@ -307,25 +367,24 @@ export class PipelineManager {
       );
       session.hypothesis = hypothesis;
 
-      this.emit(onEvent, {
+      await emit({
         stage: 'hypothesis',
         status: 'completed',
         message: `Hypothesis: ${hypothesis.title} (${hypothesis.vulnerabilityType})`,
         data: { hypothesis },
-        timestamp: Date.now(),
       });
-      await updateSession({ currentStage: 'hypothesis', status: 'running', hypothesis });
+      this._stagesCompleted.push('hypothesis');
+      await updateSession({ stagesCompleted: this._stagesCompleted, hypothesis });
 
-      if (signal?.aborted) {
-        return this.cancelRun();
-      }
+      checkAbort();
 
-      // ─── Stage 2: PoC Generation ──────────────────────────────────────
-      this.emit(onEvent, {
+      // ═══════════════════════════════════════════════════════════════════
+      // STAGE 2: PoC GENERATION
+      // ═══════════════════════════════════════════════════════════════════
+      await emit({
         stage: 'poc_generation',
         status: 'running',
         message: 'Generating Foundry PoC...',
-        timestamp: Date.now(),
       });
       this._currentStage = 'poc_generation';
       await updateSession({ currentStage: 'poc_generation' });
@@ -338,389 +397,525 @@ export class PipelineManager {
         forkUrl: forkUrl || this.config.forkRpcUrl || undefined,
       };
 
-      const pocResult = await runStageWithRetry('poc_generation', () =>
+      let pocResult = await runStageWithRetry('poc_generation', () =>
         this.pocGenerator.generate(pocRequest)
       );
+      
+      // Initialize PoC state machine
+      pocResult.state = 'generated';
+      pocResult.stateHistory = [
+        { from: 'pending', to: 'generating', timestamp: Date.now() },
+        { from: 'generating', to: 'generated', timestamp: Date.now() },
+      ];
+      
+      session.pocResult = pocResult;
+
+      await emit({
+        stage: 'poc_generation',
+        status: 'completed',
+        message: 'PoC generated successfully',
+        data: { pocGenerated: true },
+      });
+      this._stagesCompleted.push('poc_generation');
+      await updateSession({ stagesCompleted: this._stagesCompleted, pocResult });
+
+      checkAbort();
+
+      // ═══════════════════════════════════════════════════════════════════
+      // STAGE 3: PoC COMPILATION (with auto-fix retry loop)
+      // ═══════════════════════════════════════════════════════════════════
+      await emit({
+        stage: 'poc_compilation',
+        status: 'running',
+        message: 'Compiling PoC with Foundry...',
+      });
+      this._currentStage = 'poc_compilation';
+      await updateSession({ currentStage: 'poc_compilation' });
+
+      // Compilation with auto-fix
+      pocResult = await this.compileWithAutoFix(pocResult, sourceCode, target, forkUrl, maxRetries, checkAbort, emit, updateSession);
+
       session.pocResult = pocResult;
 
       if (!pocResult.compilationSuccess) {
-        this.emit(onEvent, {
-          stage: 'poc_compilation',
-          status: 'failed',
-          message: `PoC compilation failed after ${pocResult.compilationAttempts} attempts`,
-          data: { errors: pocResult.errors },
-          timestamp: Date.now(),
-        });
-
-        // Build report with failed state
-        const forgeOutput: ForgeOutput = {
-          raw: pocResult.errors.join('\n'),
-          testResults: [],
-          compilationErrors: pocResult.errors,
-          exitCode: 1,
-          duration: 0,
-        };
-
-        const exploitResult: ExploitResult = {
-          success: false,
-          attackerProfit: '0',
-          profitToken: 'N/A',
-          profitUSD: 0,
-          tokenBalances: {},
-          moneyFlow: [],
-          revertedTransactions: [],
-          gasUsage: { total: 0, byOperation: {} },
-        };
-
-        const hsInput = { forgeOutput, exploitResult, hypothesis };
-        const hs = this.honestSignal.evaluate(hsInput);
-        const report = this.reportBuilder.build({
-          target: target.value,
-          targetAddress: target.type === 'contract_address' ? target.value : undefined,
-          chain: target.chain,
-          hypothesis,
-          poc: pocResult,
-          forgeOutput,
-          exploitResult,
-          honestSignal: hs,
-          moneyFlow: [],
-        });
-        session.report = report;
-
-        this._status = 'completed';
-        this._currentStage = 'failed';
-        await updateSession({ currentStage: 'failed', status: 'failed', error: 'PoC compilation failed', report });
-        return { success: false, report, error: 'PoC compilation failed', stage: 'poc_compilation' };
+        // All retries exhausted — build failure report
+        await this.buildFailureReport(session, pocResult, 'PoC compilation failed after all retries', 'poc_compilation');
+        return { success: false, error: 'PoC compilation failed', stage: 'poc_compilation' };
       }
 
-      this.emit(onEvent, {
-        stage: 'poc_compilation',
-        status: 'completed',
-        message: `PoC compiled successfully (${pocResult.compilationAttempts} attempt(s))`,
-        data: { attempts: pocResult.compilationAttempts },
-        timestamp: Date.now(),
-      });
-      await updateSession({ currentStage: 'poc_compilation', status: 'running', pocResult });
+      checkAbort();
 
-      if (signal?.aborted) {
-        return this.cancelRun();
-      }
-
-      // ─── Stage 3: Forge Execution ─────────────────────────────────────
-      this.emit(onEvent, {
+      // ═══════════════════════════════════════════════════════════════════
+      // STAGE 4: FORGE EXECUTION
+      // ═══════════════════════════════════════════════════════════════════
+      await emit({
         stage: 'forge_execution',
         status: 'running',
-        message: 'Executing forge test...',
-        timestamp: Date.now(),
+        message: 'Running forge test in sandbox...',
       });
       this._currentStage = 'forge_execution';
       await updateSession({ currentStage: 'forge_execution' });
 
-      // Write the PoC to a Foundry project structure
-      const poCDir = path.join(workspaceDir, 'forge-poc');
-      fs.mkdirSync(path.join(poCDir, 'test'), { recursive: true });
-      fs.mkdirSync(path.join(poCDir, 'lib', 'forge-std', 'src'), { recursive: true });
-
-      // Write forge-std stub
-      fs.writeFileSync(
-        path.join(poCDir, 'lib', 'forge-std', 'src', 'Test.sol'),
-        this.getForgeStdStub(),
-        'utf-8'
+      const forgeOutput = await runStageWithRetry('forge_execution', () =>
+        this.forgeRunner.runTest(pocResult.filePath, {
+          forkUrl: forkUrl || this.config.forkRpcUrl,
+          dockerEnabled: this.config.dockerEnabled,
+          dockerImage: this.config.dockerImage,
+        })
       );
-
-      // Write PoC
-      fs.writeFileSync(
-        path.join(poCDir, 'test', 'PoC.t.sol'),
-        pocResult.sourceCode,
-        'utf-8'
-      );
-
-      // Write config files
-      fs.writeFileSync(
-        path.join(poCDir, 'foundry.toml'),
-        '[profile.default]\nsrc = "test"\nlibs = ["lib"]\nsolc = "0.8.19"\n\n[profile.default.optimizer]\nenabled = true\nruns = 200\n',
-        'utf-8'
-      );
-      fs.writeFileSync(
-        path.join(poCDir, 'remappings.txt'),
-        'forge-std/=lib/forge-std/src/\n',
-        'utf-8'
-      );
-
-      const forgeOutput = await this.forgeRunner.run(poCDir);
       session.forgeOutput = forgeOutput;
 
-      this.emit(onEvent, {
+      await emit({
         stage: 'forge_execution',
-        status: forgeOutput.exitCode === 0 ? 'completed' : 'failed',
-        message: `forge test exit code: ${forgeOutput.exitCode} (${forgeOutput.testResults.length} tests)`,
+        status: 'completed',
+        message: `Forge exit code: ${forgeOutput.exitCode}`,
         data: { exitCode: forgeOutput.exitCode, testCount: forgeOutput.testResults.length },
-        timestamp: Date.now(),
       });
-      await updateSession({ currentStage: 'forge_execution', status: forgeOutput.exitCode === 0 ? 'completed' : 'failed', forgeOutput });
+      this._stagesCompleted.push('forge_execution');
+      await updateSession({ stagesCompleted: this._stagesCompleted, forgeOutput });
 
-      if (signal?.aborted) {
-        return this.cancelRun();
-      }
+      checkAbort();
 
-      // ─── Stage 4: Output Parsing ──────────────────────────────────────
-      this.emit(onEvent, {
+      // ═══════════════════════════════════════════════════════════════════
+      // STAGE 5: OUTPUT PARSING
+      // ═══════════════════════════════════════════════════════════════════
+      await emit({
         stage: 'output_parsing',
         status: 'running',
-        message: 'Parsing forge output...',
-        timestamp: Date.now(),
+        message: 'Parsing forge output and extracting traces...',
       });
       this._currentStage = 'output_parsing';
       await updateSession({ currentStage: 'output_parsing' });
 
-      const exploitResult = this.outputParser.parseExploitResult(forgeOutput);
-      session.exploitResult = exploitResult;
+      const parsed = await this.outputParser.parse(forgeOutput);
+      // Store parsed traces in session for verification
+      (session as any).parsedTraces = parsed.traces;
+      (session as any).stateChanges = parsed.stateChanges;
+      (session as any).transfers = parsed.transfers;
 
-      this.emit(onEvent, {
+      await emit({
         stage: 'output_parsing',
         status: 'completed',
-        message: `Exploit ${exploitResult.success ? 'succeeded' : 'failed'} — Profit: ${exploitResult.attackerProfit} ${exploitResult.profitToken}`,
-        data: { exploitResult },
-        timestamp: Date.now(),
+        message: 'Output parsed successfully',
+        data: { tracesFound: parsed.traces?.length || 0, transfersFound: parsed.transfers?.length || 0 },
       });
-      await updateSession({ currentStage: 'output_parsing', status: 'completed', exploitResult });
+      this._stagesCompleted.push('output_parsing');
+      await updateSession({ stagesCompleted: this._stagesCompleted });
 
-      if (signal?.aborted) {
-        return this.cancelRun();
-      }
+      checkAbort();
 
-      // ─── Stage 5: Honest Signal ───────────────────────────────────────
-      this.emit(onEvent, {
+      // ═══════════════════════════════════════════════════════════════════
+      // STAGE 6: HONEST SIGNAL VERIFICATION
+      // ═══════════════════════════════════════════════════════════════════
+      await emit({
         stage: 'verification',
         status: 'running',
-        message: 'Evaluating honest signal...',
-        timestamp: Date.now(),
+        message: 'Running Honest Signal verification...',
       });
       this._currentStage = 'verification';
       await updateSession({ currentStage: 'verification' });
 
-      const hs = this.honestSignal.evaluate({
-        forgeOutput,
-        exploitResult,
+      const exploitResult = await this.honestSignal.evaluate({
         hypothesis,
+        forgeOutput,
+        pocResult,
+        parsedTraces: (session as any).parsedTraces,
+        stateChanges: (session as any).stateChanges,
+        transfers: (session as any).transfers,
       });
-      session.honestSignal = hs;
+      session.exploitResult = exploitResult;
+      session.honestSignal = exploitResult.honestSignal;
 
-      this.emit(onEvent, {
+      await emit({
         stage: 'verification',
         status: 'completed',
-        message: hs.confirmed
-          ? 'EXPLOIT CONFIRMED'
-          : 'Exploit NOT confirmed',
-        data: { honestSignal: hs },
-        timestamp: Date.now(),
+        message: `Honest Signal: ${exploitResult.honestSignal.confirmed ? 'CONFIRMED' : 'NOT CONFIRMED'} (${(exploitResult.honestSignal.confidence * 100).toFixed(0)}%)`,
+        data: { 
+          confirmed: exploitResult.honestSignal.confirmed,
+          confidence: exploitResult.honestSignal.confidence,
+          conditions: exploitResult.honestSignal.conditions 
+        },
       });
-      await updateSession({ currentStage: 'verification', status: 'completed', honestSignal: hs });
+      this._stagesCompleted.push('verification');
+      await updateSession({ stagesCompleted: this._stagesCompleted, exploitResult, honestSignal: exploitResult.honestSignal });
 
-      if (signal?.aborted) {
-        return this.cancelRun();
-      }
+      checkAbort();
 
-      // ─── Stage 6: Report Generation ───────────────────────────────────
-      this.emit(onEvent, {
+      // ═══════════════════════════════════════════════════════════════════
+      // STAGE 7: REPORT GENERATION
+      // ═══════════════════════════════════════════════════════════════════
+      await emit({
         stage: 'report_generation',
         status: 'running',
         message: 'Building investigation report...',
-        timestamp: Date.now(),
       });
       this._currentStage = 'report_generation';
       await updateSession({ currentStage: 'report_generation' });
 
-      const report = this.reportBuilder.build({
-        target: target.value,
-        targetAddress: target.type === 'contract_address' ? target.value : undefined,
-        chain: target.chain,
+      const report = await this.reportBuilder.build({
+        sessionId,
+        target,
         hypothesis,
-        poc: pocResult,
+        pocResult,
         forgeOutput,
         exploitResult,
-        honestSignal: hs,
+        honestSignal: exploitResult.honestSignal,
         moneyFlow: exploitResult.moneyFlow,
+        evidence: [],
+        timeline: this.buildTimeline(session),
       });
       session.report = report;
 
-      // ─── Cleanup ──────────────────────────────────────────────────────
-      this.cleanup(workspaceDir);
+      await emit({
+        stage: 'report_generation',
+        status: 'completed',
+        message: 'Report generated successfully',
+        data: { reportId: report.id },
+      });
+      this._stagesCompleted.push('report_generation');
+      await updateSession({ stagesCompleted: this._stagesCompleted, report });
 
+      // ═══════════════════════════════════════════════════════════════════
+      // COMPLETED
+      // ═══════════════════════════════════════════════════════════════════
       this._status = 'completed';
       this._currentStage = 'completed';
+      await updateSession({ status: 'completed', currentStage: 'completed', completedAt: Date.now() });
 
-      this.emit(onEvent, {
+      await emit({
         stage: 'completed',
         status: 'completed',
         message: `Pipeline complete — Verdict: ${report.verdict.toUpperCase()}`,
-        data: { report },
-        timestamp: Date.now(),
+        data: { verdict: report.verdict, reportId: report.id },
       });
-      await updateSession({ currentStage: 'completed', status: 'completed', report });
 
       return { success: true, report, stage: 'completed' };
-    } catch (err: any) {
-      this._status = 'failed';
-      this._currentStage = 'failed';
-      this._error = err.message || 'Unknown pipeline error';
 
-      this.emit(onEvent, {
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      
+      if (error.message === 'Pipeline cancelled') {
+        this._status = 'cancelled';
+        this._currentStage = 'cancelled';
+        await updateSession({ status: 'cancelled', currentStage: 'cancelled', error: 'Cancelled by user', completedAt: Date.now() });
+        
+        await emit({
+          stage: this._currentStage as PipelineStage,
+          status: 'failed',
+          message: 'Pipeline cancelled by user',
+          data: { cancelled: true },
+        });
+        
+        return { success: false, error: 'Pipeline cancelled', stage: 'cancelled' };
+      }
+
+      this._status = 'failed';
+      this._error = error.message;
+      this._currentStage = 'failed';
+      
+      await updateSession({ status: 'failed', currentStage: 'failed', error: error.message, completedAt: Date.now() });
+      
+      await emit({
         stage: 'failed',
         status: 'failed',
-        message: `Pipeline failed: ${this._error}`,
-        data: { error: this._error },
-        timestamp: Date.now(),
+        message: `Pipeline failed: ${error.message}`,
+        data: { error: error.message, stage: this._currentStage },
       });
-      await updateSession({ currentStage: 'failed', status: 'failed', error: this._error });
 
-      this.cleanup(workspaceDir);
-
-      return {
-        success: false,
-        error: this._error,
-        stage: 'failed',
-      };
+      return { success: false, error: error.message, stage: this._currentStage };
     }
   }
 
   /**
-   * Generate an attack hypothesis from source code using AI.
+   * Compile PoC with auto-fix retry loop.
+   * State transitions: generated → compiling → compiled | compilation_failed → (retry) → compiling
    */
-  private async generateHypothesis(
+  private async compileWithAutoFix(
+    pocResult: PoCResult,
     sourceCode: string,
-    targetName?: string
-  ): Promise<AttackHypothesis> {
-    const userPrompt = `Analyze this Solidity contract${targetName ? ` (${targetName})` : ''} for vulnerabilities:
+    target: PipelineTarget,
+    forkUrl: string | undefined,
+    maxRetries: number,
+    checkAbort: () => void,
+    emit: (event: Omit<PipelineEvent, 'timestamp'>) => Promise<void>,
+    updateSession: (updates: Partial<PipelineSession>) => Promise<void>
+  ): Promise<PoCResult> {
+    
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      checkAbort();
+      
+      // Transition to compiling
+      transitionPoCState(pocResult, pocResult.state, 'compiling', { attempt: attempt + 1 });
+      
+      await emit({
+        stage: 'poc_compilation',
+        status: 'running',
+        message: `Compiling PoC (attempt ${attempt + 1}/${maxRetries + 1})...`,
+        data: { attempt: attempt + 1, maxRetries: maxRetries + 1 },
+      });
 
-\`\`\`solidity
-${sourceCode.slice(0, 12_000)}
-\`\`\`
+      const compileResult = await this.pocGenerator.compile(pocResult.filePath, {
+        forgePath: this.config.forgePath,
+        dockerEnabled: this.config.dockerEnabled,
+        dockerImage: this.config.dockerImage,
+      });
 
-Output a JSON attack hypothesis. If the code appears secure, set "confidence" to 0 and explain why.`;
+      pocResult.compilationAttempts = attempt + 1;
+      pocResult.errors = compileResult.errors;
 
-    const response = await this.aiClient.prompt(
-      HYPOTHESIS_SYSTEM_PROMPT,
-      userPrompt,
-      { maxTokens: 2048, temperature: 0.2 }
-    );
+      if (compileResult.success) {
+        // Success!
+        pocResult.compilationSuccess = true;
+        transitionPoCState(pocResult, 'compiling', 'compiled', { attempt: attempt + 1 });
+        
+        await emit({
+          stage: 'poc_compilation',
+          status: 'completed',
+          message: `PoC compiled successfully on attempt ${attempt + 1}`,
+          data: { compilationSuccess: true, attempts: attempt + 1 },
+        });
+        
+        return pocResult;
+      }
 
-    // Parse JSON from response
-    let hypothesis: AttackHypothesis;
+      // Compilation failed
+      transitionPoCState(pocResult, 'compiling', 'compilation_failed', { 
+        attempt: attempt + 1, 
+        errors: compileResult.errors 
+      });
+      
+      pocResult.lastError = compileResult.errors.join('\n');
+
+      await emit({
+        stage: 'poc_compilation',
+        status: 'failed',
+        message: `Compilation failed (attempt ${attempt + 1}): ${compileResult.errors[0]}`,
+        data: { errors: compileResult.errors, attempt: attempt + 1 },
+      });
+
+      // If this was the last attempt, give up
+      if (attempt >= maxRetries) {
+        pocResult.compilationSuccess = false;
+        return pocResult;
+      }
+
+      // ═══════════════════════════════════════════════════════════════════
+      // AUTO-FIX: Use LLM to fix compilation errors
+      // ═══════════════════════════════════════════════════════════════════
+      await emit({
+        stage: 'poc_compilation',
+        status: 'running',
+        message: `Auto-fixing compilation errors (attempt ${attempt + 1})...`,
+        data: { autoFix: true, attempt: attempt + 1 },
+      });
+
+      checkAbort();
+
+      try {
+        const fixedCode = await this.autoFixPoC(
+          pocResult.sourceCode,
+          compileResult.errors,
+          sourceCode,
+          target,
+          forkUrl
+        );
+        
+        // Write fixed code
+        fs.writeFileSync(pocResult.filePath, fixedCode);
+        pocResult.sourceCode = fixedCode;
+        
+        await emit({
+          stage: 'poc_compilation',
+          status: 'running',
+          message: 'Auto-fix applied, recompiling...',
+          data: { autoFixApplied: true },
+        });
+        
+      } catch (fixErr) {
+        // Auto-fix failed — log and continue to next attempt
+        console.warn('[PipelineManager] Auto-fix failed:', fixErr);
+        await emit({
+          stage: 'poc_compilation',
+          status: 'failed',
+          message: `Auto-fix failed: ${fixErr instanceof Error ? fixErr.message : 'Unknown error'}`,
+          data: { autoFixFailed: true },
+        });
+      }
+    }
+
+    return pocResult;
+  }
+
+  /**
+   * Use LLM to fix compilation errors in the PoC.
+   */
+  private async autoFixPoC(
+    pocCode: string,
+    errors: string[],
+    targetCode: string,
+    target: PipelineTarget,
+    forkUrl: string | undefined
+  ): Promise<string> {
+    const errorText = errors.join('\n');
+    
+    const fixPrompt = `The following Foundry test file failed to compile. Fix the errors.
+
+=== COMPILER ERRORS ===
+${errorText}
+
+=== FAILED TEST CODE ===
+${pocCode}
+
+=== TARGET CONTRACT (for context) ===
+${targetCode}
+
+=== TARGET INFO ===
+Address: ${target.value}
+Chain: ${target.chain}
+Fork URL: ${forkUrl || 'not provided'}
+
+Return ONLY the fixed Solidity code in a \`\`\`solidity code block.`;
+
+    const fixedResponse = await this.aiClient.prompt(POC_FIX_SYSTEM_PROMPT, fixPrompt, {
+      temperature: 0.1,
+      maxTokens: 8000,
+    });
+
+    // Extract Solidity code from response
+    const solMatch = fixedResponse.match(/```solidity\n([\s\S]*?)```/i);
+    if (solMatch) {
+      return solMatch[1].trim();
+    }
+    
+    // Fallback: try generic code block
+    const codeMatch = fixedResponse.match(/```\n?([\s\S]*?)```/i);
+    if (codeMatch) {
+      return codeMatch[1].trim();
+    }
+    
+    throw new Error('Failed to extract fixed Solidity code from LLM response');
+  }
+
+  /**
+   * Generate attack hypothesis from target code.
+   */
+  private async generateHypothesis(sourceCode: string, targetName: string): Promise<AttackHypothesis> {
+    const prompt = `Analyze this Solidity contract for exploitable vulnerabilities.
+
+Target: ${targetName}
+
+=== SOURCE CODE ===
+${sourceCode}
+
+Return ONLY the JSON hypothesis as specified.`;
+
+    const response = await this.aiClient.prompt(HYPOTHESIS_SYSTEM_PROMPT, prompt, {
+      temperature: 0.2,
+      maxTokens: 4000,
+    });
+
     try {
-      hypothesis = AIClient.extractJSON<AttackHypothesis>(response);
-    } catch {
-      // If JSON parsing fails, create a default hypothesis
-      hypothesis = {
-        title: `Analysis of ${targetName || 'contract'}`,
-        vulnerabilityType: 'other',
-        affectedContracts: [targetName || 'Unknown'],
-        attackVector: 'AI analysis produced unparseable output. Manual review required.',
-        preconditions: ['N/A'],
-        expectedOutcome: 'Unknown — AI output could not be parsed',
-        severity: 'medium',
-        confidence: 0,
-      };
-    }
-
-    // Validate required fields
-    if (!hypothesis.title) hypothesis.title = `Analysis of ${targetName || 'contract'}`;
-    if (!hypothesis.vulnerabilityType) hypothesis.vulnerabilityType = 'other';
-    if (!hypothesis.affectedContracts || hypothesis.affectedContracts.length === 0) {
-      hypothesis.affectedContracts = [targetName || 'Unknown'];
-    }
-    if (!hypothesis.attackVector) hypothesis.attackVector = 'Unknown attack vector';
-    if (!hypothesis.preconditions) hypothesis.preconditions = [];
-    if (!hypothesis.expectedOutcome) hypothesis.expectedOutcome = 'Unknown outcome';
-    if (!hypothesis.severity) hypothesis.severity = 'medium';
-
-    return hypothesis;
-  }
-
-  // ─── Event Helpers ───────────────────────────────────────────────────────
-
-  private emit(
-    handler: PipelineEventHandler | undefined,
-    event: {
-      stage: PipelineStage;
-      status: 'running' | 'completed' | 'failed';
-      message: string;
-      data?: Record<string, unknown>;
-      timestamp: number;
-    }
-  ): void {
-    handler?.(event as PipelineEvent);
-  }
-
-  private cancelRun(): PipelineRunResult {
-    this._status = 'cancelled';
-    this._currentStage = 'completed';
-    return { success: false, error: 'Pipeline cancelled', stage: this._currentStage };
-  }
-
-  // ─── Cleanup ─────────────────────────────────────────────────────────────
-
-  private cleanup(dir: string): void {
-    try {
-      fs.rmSync(dir, { recursive: true, force: true });
-    } catch {
-      // ignore
+      const hypothesis = AIClient.extractJSON<AttackHypothesis>(response);
+      // Validate required fields
+      if (!hypothesis.title || !hypothesis.vulnerabilityType || !hypothesis.attackVector) {
+        throw new Error('Invalid hypothesis structure from LLM');
+      }
+      return hypothesis;
+    } catch (err) {
+      throw new Error(`Failed to parse hypothesis: ${err instanceof Error ? err.message : 'Unknown error'}`);
     }
   }
 
-  // ─── Forge Std Stub ──────────────────────────────────────────────────────
+  /**
+   * Build failure report when pipeline fails early.
+   */
+  private async buildFailureReport(
+    session: PipelineSession,
+    pocResult: PoCResult,
+    errorMessage: string,
+    failedStage: PipelineStage
+  ): Promise<void> {
+    const hypothesis = session.hypothesis || { title: 'Unknown', vulnerabilityType: 'unknown', attackVector: 'N/A', severity: 'low' as any, confidence: 0, affectedContracts: [], preconditions: [], expectedOutcome: '' };
+    
+    const forgeOutput: ForgeOutput = {
+      raw: pocResult.errors.join('\n'),
+      testResults: [],
+      compilationErrors: pocResult.errors,
+      exitCode: 1,
+      duration: 0,
+    };
 
-  private getForgeStdStub(): string {
-    return `// SPDX-License-Identifier: MIT
-pragma solidity >=0.6.0 <0.9.0;
+    const exploitResult: ExploitResult = {
+      success: false,
+      attackerProfit: '0',
+      profitToken: 'N/A',
+      profitUSD: 0,
+      tokenBalances: {},
+      moneyFlow: [],
+      revertedTransactions: [],
+      gasUsage: { total: 0, byOperation: {} },
+    };
 
-interface Vm {
-    function createSelectFork(string calldata) external returns (uint256);
-    function createFork(string calldata) external returns (uint256);
-    function selectFork(uint256) external;
-    function prank(address) external;
-    function startPrank(address) external;
-    function startPrank(address, address) external;
-    function stopPrank() external;
-    function deal(address, uint256) external;
-    function warp(uint256) external;
-    function roll(uint256) external;
-    function expectRevert(bytes calldata) external;
-    function expectRevert() external;
-    function expectEmit(bool, bool, bool, bool) external;
-    function record() external;
-    function accesses(address, bytes32) external returns (bool, bool);
-    function label(address, string calldata) external;
-    function getBlockNumber() external returns (uint256);
-    function getBlockTimestamp() external returns (uint256);
-    function toString(address) external returns (string memory);
-    function toString(uint256) external returns (string memory);
-    function toString(bytes32) external returns (string memory);
-    function assume(bool) external;
-}
+    const honestSignal: HonestSignal = {
+      confirmed: false,
+      confidence: 0,
+      conditions: [
+        { name: 'poc_generated', satisfied: !!session.pocResult?.sourceCode, detail: session.pocResult?.sourceCode ? 'PoC was generated' : 'PoC generation failed' },
+        { name: 'poc_compiled', satisfied: pocResult.compilationSuccess, detail: pocResult.compilationSuccess ? 'PoC compiled successfully' : `Compilation failed: ${pocResult.errors[0] || 'Unknown error'}` },
+        { name: 'forge_executed', satisfied: false, detail: 'Forge not executed due to compilation failure' },
+        { name: 'exploit_reproduced', satisfied: false, detail: 'Exploit not executed' },
+        { name: 'state_change_verified', satisfied: false, detail: 'State change not verified' },
+        { name: 'attacker_gain_verified', satisfied: false, detail: 'Attacker gain not verified' },
+      ],
+      explanation: `Pipeline failed at ${failedStage}: ${errorMessage}`,
+      pocGenerated: !!session.pocResult?.sourceCode,
+      pocCompiled: pocResult.compilationSuccess,
+      forgeExecuted: false,
+      exploitReproduced: false,
+      stateChangeVerified: false,
+      attackerGainVerified: false,
+    };
 
-abstract contract StdAssertions {
-    function assertTrue(bool c) public pure { require(c, "assertTrue"); }
-    function assertTrue(bool c, string memory e) public pure { require(c, e); }
-    function assertEq(uint256 a, uint256 b) public pure { require(a == b, "assertEq(uint256)"); }
-    function assertEq(uint256 a, uint256 b, string memory e) public pure { require(a == b, e); }
-    function assertEq(address a, address b) public pure { require(a == b, "assertEq(address)"); }
-    function assertEq(address a, address b, string memory e) public pure { require(a == b, e); }
-    function assertEq(bytes32 a, bytes32 b) public pure { require(a == b, "assertEq(bytes32)"); }
-    function assertEq(string memory a, string memory b) public pure { require(keccak256(bytes(a)) == keccak256(bytes(b)), "assertEq(string)"); }
-    function assertGt(uint256 a, uint256 b) public pure { require(a > b, "assertGt"); }
-    function assertGe(uint256 a, uint256 b) public pure { require(a >= b, "assertGe"); }
-    function assertLt(uint256 a, uint256 b) public pure { require(a < b, "assertLt"); }
-    function assertLe(uint256 a, uint256 b) public pure { require(a <= b, "assertLe"); }
-    function assertNotEq(uint256 a, uint256 b) public pure { require(a != b, "assertNotEq"); }
-    function assertApproxEqAbs(uint256 a, uint256 b, uint256 tol) public pure { require(a >= b ? a - b <= tol : b - a <= tol, "assertApproxEqAbs"); }
-}
+    const report = await this.reportBuilder.build({
+      sessionId: session.id,
+      target: session.target,
+      hypothesis,
+      pocResult,
+      forgeOutput,
+      exploitResult,
+      honestSignal,
+      moneyFlow: [],
+      evidence: [],
+      timeline: this.buildTimeline(session),
+    });
+    session.report = report;
+  }
 
-abstract contract Test is StdAssertions {
-    Vm public constant vm = Vm(0x7109709ECfa91a80626fF3989D68f67F5b1DD12D);
-    function setUp() public virtual;
-    function testExploit() public virtual;
-}`;
+  /**
+   * Build timeline from session stages.
+   */
+  private buildTimeline(session: PipelineSession): Array<{ type: string; title: string; description: string; timestamp: number }> {
+    const timeline: Array<{ type: string; title: string; description: string; timestamp: number }> = [];
+    
+    timeline.push({ type: 'investigation_start', title: 'Investigation Started', description: `Target: ${session.target.value}`, timestamp: session.createdAt });
+    
+    if (session.hypothesis) {
+      timeline.push({ type: 'finding_discovered', title: 'Hypothesis Formed', description: session.hypothesis.title, timestamp: session.updatedAt });
+    }
+    if (session.pocResult) {
+      timeline.push({ type: 'finding_discovered', title: 'PoC Generated', description: `Compilation: ${session.pocResult.compilationSuccess ? 'Success' : 'Failed'}`, timestamp: session.updatedAt });
+    }
+    if (session.forgeOutput) {
+      timeline.push({ type: 'exploit_simulated', title: 'Forge Test Executed', description: `Exit code: ${session.forgeOutput.exitCode}`, timestamp: session.updatedAt });
+    }
+    if (session.honestSignal) {
+      timeline.push({ type: 'finding_verified', title: 'Honest Signal', description: session.honestSignal.confirmed ? 'CONFIRMED' : 'NOT CONFIRMED', timestamp: session.updatedAt });
+    }
+    if (session.report) {
+      timeline.push({ type: 'report_generated', title: 'Report Generated', description: session.report.verdict, timestamp: session.updatedAt });
+    }
+    
+    return timeline;
   }
 
   /**
@@ -735,5 +930,17 @@ abstract contract Test is StdAssertions {
       errors.push('Forge path is not configured and Docker is disabled. Set sireen.forgePath or enable Docker.');
     }
     return errors;
+  }
+
+  // Helper for PoC state transitions
+  private transitionPoCState(
+    pocResult: PoCResult,
+    from: PoCState,
+    to: PoCState,
+    metadata?: Record<string, unknown>
+  ): void {
+    const transition: PoCStateTransition = { from, to, timestamp: Date.now(), metadata };
+    pocResult.state = to;
+    pocResult.stateHistory.push(transition);
   }
 }

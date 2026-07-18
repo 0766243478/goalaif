@@ -38,17 +38,40 @@ export class ForgeRunner {
    * Returns structured output with raw text and metadata.
    */
   async run(workspaceDir: string): Promise<ForgeOutput> {
-    const startTime = Date.now();
-    if (this.config.dockerEnabled) {
-      return this.runInDocker(workspaceDir, startTime);
-    }
-    return this.runLocal(workspaceDir, startTime);
+    // Legacy method - delegates to runTest with default options
+    const testFilePath = path.join(workspaceDir, 'test', 'PoC.t.sol');
+    return this.runTest(testFilePath, {
+      forkUrl: this.config.forkUrl,
+      dockerEnabled: this.config.dockerEnabled,
+      dockerImage: this.config.dockerImage,
+    });
   }
 
   /**
-   * Execute forge test locally.
+   * Run a specific test file (e.g., a generated PoC) against a fork.
+   * Returns structured ForgeOutput for parsing.
    */
-  private async runLocal(workspaceDir: string, startTime: number): Promise<ForgeOutput> {
+  async runTest(
+    testFilePath: string,
+    options: { forkUrl?: string; dockerEnabled: boolean; dockerImage: string }
+  ): Promise<ForgeOutput> {
+    const workspaceDir = path.dirname(path.dirname(testFilePath));
+    const startTime = Date.now();
+
+    if (options.dockerEnabled) {
+      return this.runInDocker(workspaceDir, startTime, options);
+    }
+    return this.runLocal(workspaceDir, startTime, options);
+  }
+
+  /**
+   * Execute forge test locally with specific options.
+   */
+  private async runLocal(
+    workspaceDir: string,
+    startTime: number,
+    options: { forkUrl?: string; dockerEnabled: boolean; dockerImage: string }
+  ): Promise<ForgeOutput> {
     return new Promise((resolve) => {
       try {
         const cmdParts = [
@@ -59,11 +82,10 @@ export class ForgeRunner {
           '--root', `"${workspaceDir}"`,
         ];
 
-        if (this.config.forkUrl) {
-          cmdParts.push('--fork-url', this.config.forkUrl);
+        if (options.forkUrl) {
+          cmdParts.push('--fork-url', options.forkUrl);
         }
 
-        // Add gas reporting
         cmdParts.push('--gas-report');
 
         const cmd = cmdParts.join(' ');
@@ -72,17 +94,17 @@ export class ForgeRunner {
           timeout: this.config.timeout,
           stdio: ['pipe', 'pipe', 'pipe'],
           encoding: 'utf-8',
-          maxBuffer: 10 * 1024 * 1024, // 10MB
+          maxBuffer: 10 * 1024 * 1024,
         });
 
         const duration = Date.now() - startTime;
-
-        const testResults = this.parseTestResults(output.toString());
-        const gasReport = this.parseGasReport(output.toString());
+        const raw = output.toString();
+        const testResults = this.parseTestResults(raw);
+        const gasReport = this.parseGasReport(raw);
         const compilationErrors: string[] = [];
 
         resolve({
-          raw: output.toString(),
+          raw,
           testResults,
           gasReport: gasReport?.total ? gasReport : undefined,
           compilationErrors,
@@ -95,10 +117,7 @@ export class ForgeRunner {
         const stdout = err.stdout?.toString() || '';
         const raw = stdout + stderr;
 
-        // Check for compilation errors first
         const compilationErrors = this.extractCompilationErrors(raw);
-
-        // Even on failure, try to parse test results
         const testResults = this.parseTestResults(raw);
         const gasReport = this.parseGasReport(raw);
 
@@ -117,7 +136,11 @@ export class ForgeRunner {
   /**
    * Execute forge test inside a Docker container.
    */
-  private async runInDocker(workspaceDir: string, startTime: number): Promise<ForgeOutput> {
+  private async runInDocker(
+    workspaceDir: string,
+    startTime: number,
+    options: { forkUrl?: string; dockerEnabled: boolean; dockerImage: string }
+  ): Promise<ForgeOutput> {
     try {
       const containerName = `sireen-forge-${Date.now()}`;
 
@@ -130,14 +153,14 @@ export class ForgeRunner {
         '--name', containerName,
         '-v', `${workspaceDir}:${mountDir}`,
         '-w', mountDir,
-        this.config.dockerImage,
+        options.dockerImage,
         'forge', 'test',
         '--match-test', 'testExploit',
         '-vvv',
       ];
 
-      if (this.config.forkUrl) {
-        runCmd.push('--fork-url', this.config.forkUrl);
+      if (options.forkUrl) {
+        runCmd.push('--fork-url', options.forkUrl);
       }
 
       runCmd.push('--gas-report');
