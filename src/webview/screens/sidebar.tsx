@@ -112,6 +112,7 @@ function Sidebar() {
     const handler = (event: MessageEvent) => {
       const msg = event.data;
       if (!msg?.type) return;
+      console.log('[SIDEBAR] Received:', msg.type, msg.payload);
       switch (msg.type) {
         case 'config':
           if (msg.payload?.defaultMode) setMode(msg.payload.defaultMode);
@@ -119,13 +120,34 @@ function Sidebar() {
           break;
         case 'chat:message':
           if (msg.payload?.message) {
+            setIsStreaming(false);
             setMessages((p) => [...p, msg.payload.message]);
           }
           break;
         case 'chat:stream':
-          if (msg.payload?.message) {
+          if (msg.payload?.content) {
             setIsStreaming(true);
-            setMessages((p) => [...p, msg.payload.message]);
+            // Update last assistant message if one exists, or add a new one
+            setMessages((p) => {
+              const msgs = [...p];
+              const lastAssistant = msgs.length > 0 && msgs[msgs.length - 1].role === 'assistant';
+              if (lastAssistant) {
+                // Update last assistant message content
+                msgs[msgs.length - 1] = {
+                  ...msgs[msgs.length - 1],
+                  content: msg.payload.content,
+                  status: 'streaming',
+                };
+              } else {
+                // First streaming chunk
+                msgs.push({
+                  role: 'assistant',
+                  content: msg.payload.content,
+                  status: 'streaming',
+                });
+              }
+              return msgs;
+            });
           }
           break;
         case 'chat:status':
@@ -135,6 +157,14 @@ function Sidebar() {
           break;
         case 'chat:complete':
           setIsStreaming(false);
+          // Finalize last message
+          setMessages((p) => {
+            const msgs = [...p];
+            if (msgs.length > 0 && msgs[msgs.length - 1].role === 'assistant') {
+              msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], status: 'complete' };
+            }
+            return msgs;
+          });
           break;
         case 'focus:input':
           document.querySelector<HTMLTextAreaElement>('.s-input')?.focus();

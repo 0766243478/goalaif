@@ -196,11 +196,13 @@
 /* High Contrast adjustments are automatic via VS Code theme tokens */
 
 /* ------------------------------------------------------------------ */
-/*  Codicon Font (loaded by VS Code)                                  */
+/*  Codicon Font (multiple fallbacks for theme compatibility)         */
 /* ------------------------------------------------------------------ */
 @font-face {
   font-family: 'codicon';
-  src: url('vscode-resource:/codicon.ttf') format('truetype');
+  src: url('vscode-resource:/codicon.ttf') format('truetype'),
+       url('https://cdn.jsdelivr.net/npm/@vscode/codicons@latest/dist/codicon/codicon.ttf') format('truetype');
+  font-display: swap;
 }
 
 /* =========================================================================

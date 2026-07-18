@@ -143,18 +143,154 @@ export class AIClient {
   }
 
   /**
-   * Extract Solidity code from LLM response, handling markdown fences.
+   * Send a chat completion request to the LLM with streaming support.
+   * Calls onChunk callback for each streaming chunk.
    */
-  static extractSolidity(text: string): string {
-    // Match solidity code blocks
-    const solMatch = text.match(/```solidity\n([\s\S]*?)```/);
-    if (solMatch) return solMatch[1].trim();
+  async chatStream(
+    messages: ChatMessage[],
+    onChunk: (chunk: string) => void,
+    options?: { maxTokens?: number; temperature?: number }
+  ): Promise<string> {
+    const url = `${this.getBaseUrl()}/chat/completions`;
 
-    // Match generic code blocks
-    const codeMatch = text.match(/```\n?([\s\S]*?)```/);
-    if (codeMatch) return codeMatch[1].trim();
+    const body: ChatCompletionRequest = {
+      model: this.config.model,
+      messages,
+      max_tokens: options?.maxTokens ?? this.config.maxTokens!,
+      temperature: options?.temperature ?? this.config.temperature!,
+      stream: true,
+    };
 
-    // Return the whole text if no fences found
-    return text.trim();
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...(this.config.provider === 'anthropic'
+        ? { 'x-api-key': this.config.apiKey }
+        : { Authorization: `Bearer ${this.config.apiKey}` }),
+    };
+
+    if (this.config.provider === 'openrouter') {
+      headers['HTTP-Referer'] = 'https://sireen.dev';
+      headers['X-Title'] = 'Sireen';
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => 'unknown error');
+      throw new Error(`AI API error ${response.status}: ${errText}`);
+    }
+
+    if (!response.body) {
+      throw new Error('No response body for streaming');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let fullContent = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = chunk.split('\n');
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6).trim();
+          if (data === '[DONE]') continue;
+
+          try {
+            const parsed = JSON.parse(data);
+            const content = parsed.choices?.[0]?.delta?.content;
+            if (content) {
+              fullContent += content;
+              onChunk(content);
+            }
+          } catch {
+            // Ignore parse errors for incomplete chunks
+          }
+        }
+      }
+    }
+
+    return fullContent;
+  }
+
+  /**
+   * Send a chat completion request with streaming — returns async iterable of chunks.
+   */
+  async *streamChat(
+    messages: ChatMessage[],
+    options?: { maxTokens?: number; temperature?: number }
+  ): AsyncIterableIterator<string> {
+    const url = `${this.getBaseUrl()}/chat/completions`;
+
+    const body: ChatCompletionRequest = {
+      model: this.config.model,
+      messages,
+      max_tokens: options?.maxTokens ?? this.config.maxTokens!,
+      temperature: options?.temperature ?? this.config.temperature!,
+      stream: true,
+    };
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...(this.config.provider === 'anthropic'
+        ? { 'x-api-key': this.config.apiKey }
+        : { Authorization: `Bearer ${this.config.apiKey}` }),
+    };
+
+    if (this.config.provider === 'openrouter') {
+      headers['HTTP-Referer'] = 'https://sireen.dev';
+      headers['X-Title'] = 'Sireen';
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => 'unknown error');
+      throw new Error(`AI API error ${response.status}: ${errText}`);
+    }
+
+    if (!response.body) {
+      throw new Error('No response body for streaming');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = chunk.split('\n');
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6).trim();
+          if (data === '[DONE]') continue;
+
+          try {
+            const parsed = JSON.parse(data);
+            const content = parsed.choices?.[0]?.delta?.content;
+            if (content) {
+              yield content;
+            }
+          } catch {
+            // Ignore parse errors for incomplete chunks
+          }
+        }
+      }
+    }
   }
 }

@@ -1,12 +1,22 @@
 // ============================================================================
 // SIREEN — VS Code Native Style Helpers
 // ============================================================================
-// Minimal utilities. No custom CSS injection needed — tokens.css is loaded by esbuild.
+// Injects design tokens CSS into the webview.
 // ============================================================================
 
+// Import the CSS as text (esbuild loader: { '.css': 'text' })
+import tokensCss from './tokens.css';
+
+let stylesInjected = false;
+
 export function injectGlobalStyles() {
-  // No-op: tokens.css is bundled by esbuild and injected at build time.
-  // Kept for API compatibility with existing screens.
+  if (stylesInjected || typeof document === 'undefined') return;
+  
+  const style = document.createElement('style');
+  style.id = 'sireen-design-tokens';
+  style.textContent = tokensCss;
+  document.head.appendChild(style);
+  stylesInjected = true;
 }
 
 export function createStyles(styles: Record<string, string | number>) {

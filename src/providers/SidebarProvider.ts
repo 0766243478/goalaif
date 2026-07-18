@@ -12,15 +12,35 @@ import { getWebviewHtml } from '../utils/webview';
 import { PipelineManager } from '../pipeline/PipelineManager';
 import type { PipelineConfig } from '../pipeline/types';
 import { DEFAULT_PIPELINE_CONFIG } from '../pipeline/types';
+import { AIClient } from '../ai/AIClient';
 
 export class SidebarProvider implements vscode.WebviewViewProvider {
   private _view: vscode.WebviewView | undefined;
   private _context: vscode.ExtensionContext;
   private _pipelineManager: PipelineManager | undefined;
   private _currentPipelineAbortController: AbortController | null = null;
+  private _aiClient: AIClient | undefined;
 
   constructor(context: vscode.ExtensionContext) {
     this._context = context;
+    this._initializeAIClient();
+  }
+
+  private _initializeAIClient(): void {
+    const config = vscode.workspace.getConfiguration('sireen');
+    const provider = config.get('aiProvider') || 'openrouter';
+    const apiKey = config.get('aiApiKey') || '';
+    const model = config.get('aiModel') || 'openai/o3-mini';
+
+    if (apiKey) {
+      this._aiClient = new AIClient({ provider, apiKey, model });
+    } else {
+      console.warn('[SidebarProvider] AI API key not configured — AI chat will not work');
+    }
+  }
+
+  private _reinitializeAIClient(): void {
+    this._initializeAIClient();
   }
 
   setPipelineManager(pm: PipelineManager): void {
@@ -57,6 +77,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   }
 
   private handleMessage(message: any): void {
+    // Runtime diagnostic logging
+    console.log(`[PROVIDER] Received: ${message.type}`, message.payload);
+
     switch (message.type) {
       // ── Lifecycle ──────────────────────────────────────────────
       case 'ready':
@@ -423,7 +446,7 @@ contract VulnerableVault {
 
   // ── Chat ────────────────────────────────────────────────────────
 
-  private handleChatSend(payload: any): void {
+  private async handleChatSend(payload: any): Promise<void> {
     if (!payload?.text?.trim()) return;
 
     // Echo user message
@@ -438,14 +461,63 @@ contract VulnerableVault {
       },
     });
 
-    // Notify pipeline execution — real AI response is handled by the pipeline
+    // Check if AI client is available
+    if (!this._aiClient) {
+      this.postMessage({
+        type: 'chat:message',
+        payload: {
+          message: {
+            role: 'assistant',
+            content: '⚠️ AI chat is not configured. Please set your API key in Settings → General → AI API Key.',
+            status: 'complete',
+            isError: true,
+          },
+        },
+      });
+      return;
+    }
+
+    // Start streaming indicator
     this.postMessage({
       type: 'chat:status',
-      payload: {
-        status: 'queued',
-        message: 'Message queued for analysis',
-      },
+      payload: { status: 'streaming', message: 'AI is thinking...' },
     });
+
+    try {
+      const messages = [
+        { role: 'system' as const, content: 'You are Sireen, an AI security researcher specializing in smart contract vulnerabilities. Provide concise, technical responses about vulnerability analysis, exploit development, and security best practices.' },
+        { role: 'user' as const, content: payload.text },
+      ];
+
+      // Stream the AI response
+      let fullResponse = '';
+      for await (const chunk of this._aiClient.streamChat(messages)) {
+        fullResponse += chunk;
+        this.postMessage({
+          type: 'chat:stream',
+          payload: { content: fullResponse },
+        });
+      }
+
+      // Send complete
+      this.postMessage({
+        type: 'chat:complete',
+        payload: {},
+      });
+    } catch (err) {
+      console.error('[SidebarProvider] AI chat error:', err);
+      this.postMessage({
+        type: 'chat:message',
+        payload: {
+          message: {
+            role: 'assistant',
+            content: `❌ AI error: ${err instanceof Error ? err.message : 'Unknown error'}`,
+            status: 'complete',
+            isError: true,
+          },
+        },
+      });
+    }
   }
 
   // ── Findings ─────────────────────────────────────────────────────
@@ -468,16 +540,44 @@ contract VulnerableVault {
   // ── Panel Navigation ────────────────────────────────────────────
 
   private openPanel(panel: string): void {
-    const commandMap: Record<string, string> = {
-      'war-room': 'sireen.openWarRoom',
-      'report-viewer': 'sireen.openReportViewer',
+    const panelViews: Record<string, () => void> = {
+      'war-room': () => vscode.commands.executeCommand('sireen.openWarRoom'),
+      'report-viewer': () => vscode.commands.executeCommand('sireen.openReportViewer'),
+      'settings': () => this.createPanel('settings', 'Sireen Settings'),
+      'attack-workspace': () => this.createPanel('attack-workspace', 'Sireen Attack Workspace'),
+      'bounty-dashboard': () => this.createPanel('bounty-dashboard', 'Sireen Bounty Dashboard'),
+      'knowledge-graph': () => this.createPanel('knowledge-graph', 'Sireen Knowledge Graph'),
     };
-    const command = commandMap[panel];
-    if (command) {
-      vscode.commands.executeCommand(command);
+
+    const action = panelViews[panel];
+    if (action) {
+      action();
     } else {
       console.warn(`[SidebarProvider] Unknown panel: ${panel}`);
     }
+  }
+
+  private createPanel(panelId: string, title: string): void {
+    const panel = vscode.window.createWebviewPanel(
+      `sireen.${panelId}`,
+      title,
+      vscode.ViewColumn.Beside,
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [vscode.Uri.file(path.join(this._context.extensionPath, 'dist'))],
+      }
+    );
+
+    const html = getWebviewHtml(panel.webview, this._context.extensionUri, panelId);
+    panel.webview.html = html;
+    
+    // Forward messages from this panel to the main handler
+    panel.webview.onDidReceiveMessage(
+      (message) => this.handleMessage(message),
+      undefined,
+      this._context.subscriptions
+    );
   }
 
   // ── Post Message ────────────────────────────────────────────────
@@ -691,6 +791,11 @@ contract VulnerableVault {
     
     for (const [key, value] of updates) {
       config.update(key, value, vscode.ConfigurationTarget.Workspace);
+    }
+    
+    // Reinitialize AI client if API key changed
+    if (payload.aiApiKey !== undefined || payload.aiModel !== undefined || payload.aiProvider !== undefined) {
+      this._reinitializeAIClient();
     }
     
     this.postMessage({ type: 'settings:saved', payload: { success: true } });

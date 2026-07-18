@@ -111,11 +111,223 @@ function getNonce() {
   return text;
 }
 
+// src/ai/AIClient.ts
+var PROVIDER_BASE_URLS = {
+  openai: "https://api.openai.com/v1",
+  anthropic: "https://api.anthropic.com/v1",
+  openrouter: "https://openrouter.ai/api/v1"
+};
+var DEFAULT_MAX_TOKENS = 4096;
+var DEFAULT_TEMPERATURE = 0.2;
+var AIClient = class {
+  constructor(config) {
+    this.config = {
+      provider: config.provider || "openrouter",
+      apiKey: config.apiKey,
+      model: config.model || "openai/o3-mini",
+      baseUrl: config.baseUrl,
+      maxTokens: config.maxTokens || DEFAULT_MAX_TOKENS,
+      temperature: config.temperature ?? DEFAULT_TEMPERATURE
+    };
+  }
+  getBaseUrl() {
+    return this.config.baseUrl || PROVIDER_BASE_URLS[this.config.provider];
+  }
+  /**
+   * Send a chat completion request to the LLM.
+   * Returns the text content of the response.
+   */
+  async chat(messages, options) {
+    const url = `${this.getBaseUrl()}/chat/completions`;
+    const body = {
+      model: this.config.model,
+      messages,
+      max_tokens: options?.maxTokens ?? this.config.maxTokens,
+      temperature: options?.temperature ?? this.config.temperature
+    };
+    const headers = {
+      "Content-Type": "application/json",
+      ...this.config.provider === "anthropic" ? { "x-api-key": this.config.apiKey } : { Authorization: `Bearer ${this.config.apiKey}` }
+    };
+    if (this.config.provider === "openrouter") {
+      headers["HTTP-Referer"] = "https://sireen.dev";
+      headers["X-Title"] = "Sireen";
+    }
+    const response = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body)
+    });
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "unknown error");
+      throw new Error(`AI API error ${response.status}: ${errText}`);
+    }
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) {
+      throw new Error("AI API returned empty response");
+    }
+    return content;
+  }
+  /**
+   * Simple prompt wrapper — sends a system message and user prompt.
+   */
+  async prompt(systemPrompt, userPrompt, options) {
+    return this.chat(
+      [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt }
+      ],
+      options
+    );
+  }
+  /**
+   * Extract JSON from LLM response, handling markdown fences.
+   */
+  static extractJSON(text) {
+    const jsonStr = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+    return JSON.parse(jsonStr);
+  }
+  /**
+   * Send a chat completion request to the LLM with streaming support.
+   * Calls onChunk callback for each streaming chunk.
+   */
+  async chatStream(messages, onChunk, options) {
+    const url = `${this.getBaseUrl()}/chat/completions`;
+    const body = {
+      model: this.config.model,
+      messages,
+      max_tokens: options?.maxTokens ?? this.config.maxTokens,
+      temperature: options?.temperature ?? this.config.temperature,
+      stream: true
+    };
+    const headers = {
+      "Content-Type": "application/json",
+      ...this.config.provider === "anthropic" ? { "x-api-key": this.config.apiKey } : { Authorization: `Bearer ${this.config.apiKey}` }
+    };
+    if (this.config.provider === "openrouter") {
+      headers["HTTP-Referer"] = "https://sireen.dev";
+      headers["X-Title"] = "Sireen";
+    }
+    const response = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body)
+    });
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "unknown error");
+      throw new Error(`AI API error ${response.status}: ${errText}`);
+    }
+    if (!response.body) {
+      throw new Error("No response body for streaming");
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let fullContent = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done)
+        break;
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = chunk.split("\n");
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          const data = line.slice(6).trim();
+          if (data === "[DONE]")
+            continue;
+          try {
+            const parsed = JSON.parse(data);
+            const content = parsed.choices?.[0]?.delta?.content;
+            if (content) {
+              fullContent += content;
+              onChunk(content);
+            }
+          } catch {
+          }
+        }
+      }
+    }
+    return fullContent;
+  }
+  /**
+   * Send a chat completion request with streaming — returns async iterable of chunks.
+   */
+  async *streamChat(messages, options) {
+    const url = `${this.getBaseUrl()}/chat/completions`;
+    const body = {
+      model: this.config.model,
+      messages,
+      max_tokens: options?.maxTokens ?? this.config.maxTokens,
+      temperature: options?.temperature ?? this.config.temperature,
+      stream: true
+    };
+    const headers = {
+      "Content-Type": "application/json",
+      ...this.config.provider === "anthropic" ? { "x-api-key": this.config.apiKey } : { Authorization: `Bearer ${this.config.apiKey}` }
+    };
+    if (this.config.provider === "openrouter") {
+      headers["HTTP-Referer"] = "https://sireen.dev";
+      headers["X-Title"] = "Sireen";
+    }
+    const response = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body)
+    });
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "unknown error");
+      throw new Error(`AI API error ${response.status}: ${errText}`);
+    }
+    if (!response.body) {
+      throw new Error("No response body for streaming");
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done)
+        break;
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = chunk.split("\n");
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          const data = line.slice(6).trim();
+          if (data === "[DONE]")
+            continue;
+          try {
+            const parsed = JSON.parse(data);
+            const content = parsed.choices?.[0]?.delta?.content;
+            if (content) {
+              yield content;
+            }
+          } catch {
+          }
+        }
+      }
+    }
+  }
+};
+
 // src/providers/SidebarProvider.ts
 var SidebarProvider = class {
   constructor(context) {
     this._currentPipelineAbortController = null;
     this._context = context;
+    this._initializeAIClient();
+  }
+  _initializeAIClient() {
+    const config = vscode2.workspace.getConfiguration("sireen");
+    const provider = config.get("aiProvider") || "openrouter";
+    const apiKey = config.get("aiApiKey") || "";
+    const model = config.get("aiModel") || "openai/o3-mini";
+    if (apiKey) {
+      this._aiClient = new AIClient({ provider, apiKey, model });
+    } else {
+      console.warn("[SidebarProvider] AI API key not configured \u2014 AI chat will not work");
+    }
+  }
+  _reinitializeAIClient() {
+    this._initializeAIClient();
   }
   setPipelineManager(pm) {
     this._pipelineManager = pm;
@@ -140,6 +352,7 @@ var SidebarProvider = class {
     webviewView.show?.(true);
   }
   handleMessage(message) {
+    console.log(`[PROVIDER] Received: ${message.type}`, message.payload);
     switch (message.type) {
       case "ready":
         this.postConfig();
@@ -420,7 +633,7 @@ contract VulnerableVault {
     this.postMessage({ type: "investigation:mode-changed", payload: { mode } });
   }
   // ── Chat ────────────────────────────────────────────────────────
-  handleChatSend(payload) {
+  async handleChatSend(payload) {
     if (!payload?.text?.trim())
       return;
     this.postMessage({
@@ -433,13 +646,55 @@ contract VulnerableVault {
         }
       }
     });
+    if (!this._aiClient) {
+      this.postMessage({
+        type: "chat:message",
+        payload: {
+          message: {
+            role: "assistant",
+            content: "\u26A0\uFE0F AI chat is not configured. Please set your API key in Settings \u2192 General \u2192 AI API Key.",
+            status: "complete",
+            isError: true
+          }
+        }
+      });
+      return;
+    }
     this.postMessage({
       type: "chat:status",
-      payload: {
-        status: "queued",
-        message: "Message queued for analysis"
-      }
+      payload: { status: "streaming", message: "AI is thinking..." }
     });
+    try {
+      const messages = [
+        { role: "system", content: "You are Sireen, an AI security researcher specializing in smart contract vulnerabilities. Provide concise, technical responses about vulnerability analysis, exploit development, and security best practices." },
+        { role: "user", content: payload.text }
+      ];
+      let fullResponse = "";
+      for await (const chunk of this._aiClient.streamChat(messages)) {
+        fullResponse += chunk;
+        this.postMessage({
+          type: "chat:stream",
+          payload: { content: fullResponse }
+        });
+      }
+      this.postMessage({
+        type: "chat:complete",
+        payload: {}
+      });
+    } catch (err) {
+      console.error("[SidebarProvider] AI chat error:", err);
+      this.postMessage({
+        type: "chat:message",
+        payload: {
+          message: {
+            role: "assistant",
+            content: `\u274C AI error: ${err instanceof Error ? err.message : "Unknown error"}`,
+            status: "complete",
+            isError: true
+          }
+        }
+      });
+    }
   }
   // ── Findings ─────────────────────────────────────────────────────
   handleFindingAction(action, payload) {
@@ -457,16 +712,39 @@ contract VulnerableVault {
   }
   // ── Panel Navigation ────────────────────────────────────────────
   openPanel(panel) {
-    const commandMap = {
-      "war-room": "sireen.openWarRoom",
-      "report-viewer": "sireen.openReportViewer"
+    const panelViews = {
+      "war-room": () => vscode2.commands.executeCommand("sireen.openWarRoom"),
+      "report-viewer": () => vscode2.commands.executeCommand("sireen.openReportViewer"),
+      "settings": () => this.createPanel("settings", "Sireen Settings"),
+      "attack-workspace": () => this.createPanel("attack-workspace", "Sireen Attack Workspace"),
+      "bounty-dashboard": () => this.createPanel("bounty-dashboard", "Sireen Bounty Dashboard"),
+      "knowledge-graph": () => this.createPanel("knowledge-graph", "Sireen Knowledge Graph")
     };
-    const command = commandMap[panel];
-    if (command) {
-      vscode2.commands.executeCommand(command);
+    const action = panelViews[panel];
+    if (action) {
+      action();
     } else {
       console.warn(`[SidebarProvider] Unknown panel: ${panel}`);
     }
+  }
+  createPanel(panelId, title) {
+    const panel = vscode2.window.createWebviewPanel(
+      `sireen.${panelId}`,
+      title,
+      vscode2.ViewColumn.Beside,
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [vscode2.Uri.file(path.join(this._context.extensionPath, "dist"))]
+      }
+    );
+    const html = getWebviewHtml(panel.webview, this._context.extensionUri, panelId);
+    panel.webview.html = html;
+    panel.webview.onDidReceiveMessage(
+      (message) => this.handleMessage(message),
+      void 0,
+      this._context.subscriptions
+    );
   }
   // ── Post Message ────────────────────────────────────────────────
   postMessage(message) {
@@ -638,6 +916,9 @@ Format: ${payload.format}
     const updates = Object.entries(payload).map(([key, value]) => [key, value]);
     for (const [key, value] of updates) {
       config.update(key, value, vscode2.ConfigurationTarget.Workspace);
+    }
+    if (payload.aiApiKey !== void 0 || payload.aiModel !== void 0 || payload.aiProvider !== void 0) {
+      this._reinitializeAIClient();
     }
     this.postMessage({ type: "settings:saved", payload: { success: true } });
     vscode2.window.showInformationMessage("Sireen settings saved");
@@ -963,97 +1244,6 @@ ${md.replace(/^# (.*$)/gm, "<h1>$1</h1>").replace(/^## (.*$)/gm, "<h2>$1</h2>").
 var path4 = __toESM(require("path"));
 var fs4 = __toESM(require("fs"));
 var os2 = __toESM(require("os"));
-
-// src/ai/AIClient.ts
-var PROVIDER_BASE_URLS = {
-  openai: "https://api.openai.com/v1",
-  anthropic: "https://api.anthropic.com/v1",
-  openrouter: "https://openrouter.ai/api/v1"
-};
-var DEFAULT_MAX_TOKENS = 4096;
-var DEFAULT_TEMPERATURE = 0.2;
-var AIClient = class {
-  constructor(config) {
-    this.config = {
-      provider: config.provider || "openrouter",
-      apiKey: config.apiKey,
-      model: config.model || "openai/o3-mini",
-      baseUrl: config.baseUrl,
-      maxTokens: config.maxTokens || DEFAULT_MAX_TOKENS,
-      temperature: config.temperature ?? DEFAULT_TEMPERATURE
-    };
-  }
-  getBaseUrl() {
-    return this.config.baseUrl || PROVIDER_BASE_URLS[this.config.provider];
-  }
-  /**
-   * Send a chat completion request to the LLM.
-   * Returns the text content of the response.
-   */
-  async chat(messages, options) {
-    const url = `${this.getBaseUrl()}/chat/completions`;
-    const body = {
-      model: this.config.model,
-      messages,
-      max_tokens: options?.maxTokens ?? this.config.maxTokens,
-      temperature: options?.temperature ?? this.config.temperature
-    };
-    const headers = {
-      "Content-Type": "application/json",
-      ...this.config.provider === "anthropic" ? { "x-api-key": this.config.apiKey } : { Authorization: `Bearer ${this.config.apiKey}` }
-    };
-    if (this.config.provider === "openrouter") {
-      headers["HTTP-Referer"] = "https://sireen.dev";
-      headers["X-Title"] = "Sireen";
-    }
-    const response = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body)
-    });
-    if (!response.ok) {
-      const errText = await response.text().catch(() => "unknown error");
-      throw new Error(`AI API error ${response.status}: ${errText}`);
-    }
-    const data = await response.json();
-    const content = data.choices?.[0]?.message?.content;
-    if (!content) {
-      throw new Error("AI API returned empty response");
-    }
-    return content;
-  }
-  /**
-   * Simple prompt wrapper — sends a system message and user prompt.
-   */
-  async prompt(systemPrompt, userPrompt, options) {
-    return this.chat(
-      [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt }
-      ],
-      options
-    );
-  }
-  /**
-   * Extract JSON from LLM response, handling markdown fences.
-   */
-  static extractJSON(text) {
-    const jsonStr = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
-    return JSON.parse(jsonStr);
-  }
-  /**
-   * Extract Solidity code from LLM response, handling markdown fences.
-   */
-  static extractSolidity(text) {
-    const solMatch = text.match(/```solidity\n([\s\S]*?)```/);
-    if (solMatch)
-      return solMatch[1].trim();
-    const codeMatch = text.match(/```\n?([\s\S]*?)```/);
-    if (codeMatch)
-      return codeMatch[1].trim();
-    return text.trim();
-  }
-};
 
 // src/pipeline/PoCGenerator.ts
 var fs2 = __toESM(require("fs"));

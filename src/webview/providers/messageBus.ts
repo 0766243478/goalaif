@@ -177,7 +177,5 @@ export function sendError(
 // Logger
 // ---------------------------------------------------------------------------
 export function logMessage(direction: '→' | '←', type: string, payload?: unknown): void {
-  if (process.env.NODE_ENV === 'development') {
-    console.log(`[MessageBus] ${direction} ${type}`, payload ?? '');
-  }
+  console.log(`[MESSAGEBUS] ${direction} ${type}`, payload ?? '');
 }
