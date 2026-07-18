@@ -1,0 +1,179 @@
+{
+  "name": "sireen",
+  "displayName": "Sireen — Smart Contract Exploit Verification",
+  "description": "AI-powered 7-stage pipeline: finds vulnerabilities, generates exploit PoCs, executes safely in Docker-isolated Foundry, validates with Honest Signal critique, delivers professional audit reports.",
+  "version": "0.2.0",
+  "publisher": "sireen-security",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Security",
+    "Testing"
+  ],
+  "keywords": [
+    "smart-contract",
+    "solidity",
+    "security",
+    "audit",
+    "exploit",
+    "foundry",
+    "reentrancy",
+    "blockchain",
+    "web3",
+    "vulnerability"
+  ],
+  "icon": "media/shield.svg",
+  "galleryBanner": {
+    "color": "#0f172a",
+    "theme": "dark"
+  },
+  "activationEvents": [
+    "onView:sireen.sidebar",
+    "onCommand:sireen.newInvestigation",
+    "onCommand:sireen.runPipeline",
+    "onCommand:sireen.openWarRoom",
+    "onCommand:sireen.openReportViewer"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "sireen-sidebar",
+          "title": "Sireen",
+          "icon": "media/shield.svg"
+        }
+      ]
+    },
+    "views": {
+      "sireen-sidebar": [
+        {
+          "type": "webview",
+          "id": "sireen.sidebar",
+          "name": "Investigation"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "sireen.newInvestigation",
+        "title": "Sireen: New Investigation"
+      },
+      {
+        "command": "sireen.runPipeline",
+        "title": "Sireen: Run Exploit Verification Pipeline"
+      },
+      {
+        "command": "sireen.openWarRoom",
+        "title": "Sireen: War Room"
+      },
+      {
+        "command": "sireen.openReportViewer",
+        "title": "Sireen: Report Viewer"
+      },
+      {
+        "command": "sireen.focusInput",
+        "title": "Sireen: Focus Input"
+      },
+      {
+        "command": "sireen.enterLicense",
+        "title": "Sireen: Enter License Key"
+      },
+      {
+        "command": "sireen.checkLicense",
+        "title": "Sireen: Check License Status"
+      }
+    ],
+    "configuration": {
+      "title": "Sireen",
+      "properties": {
+        "sireen.aiProvider": {
+          "type": "string",
+          "default": "openrouter",
+          "enum": [
+            "openai",
+            "anthropic",
+            "openrouter"
+          ],
+          "description": "AI provider for exploit analysis and PoC generation",
+          "markdownDescription": "AI provider for exploit analysis and PoC generation. **OpenRouter** (recommended) gives access to 100+ models."
+        },
+        "sireen.aiApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key for the AI provider (stored securely in VS Code SecretStorage)",
+          "markdownDescription": "API key for the AI provider. Stored securely in VS Code SecretStorage — never written to disk."
+        },
+        "sireen.aiModel": {
+          "type": "string",
+          "default": "openai/o3-mini",
+          "description": "Model name for the AI provider",
+          "markdownDescription": "Model name. Examples: `openai/o3-mini`, `anthropic/claude-3.5-sonnet`, `openrouter/auto`."
+        },
+        "sireen.forgePath": {
+          "type": "string",
+          "default": "forge",
+          "description": "Path to the forge binary"
+        },
+        "sireen.forkRpcUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Default RPC URL for mainnet forking"
+        },
+        "sireen.maxRetries": {
+          "type": "number",
+          "default": 3,
+          "description": "Maximum PoC compilation retry attempts",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "sireen.dockerEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run forge inside Docker sandbox (recommended for untrusted code)",
+          "markdownDescription": "Run forge inside Docker sandbox. **Highly recommended** for untrusted code — provides full isolation."
+        },
+        "sireen.dockerImage": {
+          "type": "string",
+          "default": "ghcr.io/foundry-rs/foundry:latest",
+          "description": "Docker image for foundry sandbox"
+        },
+        "sireen.workspaceDir": {
+          "type": "string",
+          "default": "",
+          "description": "Working directory for pipeline temp files (empty = OS temp)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node build.js",
+    "watch": "node build.js --watch",
+    "package": "vsce package",
+    "publish": "vsce publish"
+  },
+  "dependencies": {
+    "marked": "^12.0.0",
+    "solid-js": "^1.9.0",
+    "virtua": "^0.30.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.20.2",
+    "sharp": "^0.35.3",
+    "typescript": "^5.3.0",
+    "vsce": "^2.15.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sireen-security/sireen"
+  },
+  "bugs": {
+    "url": "https://github.com/sireen-security/sireen/issues"
+  },
+  "homepage": "https://github.com/sireen-security/sireen#readme"
+}

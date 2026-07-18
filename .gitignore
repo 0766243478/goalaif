@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Build output (committed for VS Code extension distribution)
+dist/*.map
+
+# Nested git repos (track as regular files)
+goalaif/.git/
+
+# Artifacts
+*.vsix
+uploaded-image.png
+vs-code-screenshot.png
+
+# VS Code extension test artifacts
+.vscode-test/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/settings.json
+
+# Environment
+.env
+.env.local
+
+# Logs
+*.log
