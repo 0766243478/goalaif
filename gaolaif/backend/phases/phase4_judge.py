@@ -1,4 +1,5 @@
 from typing import Optional
+import asyncio
 
 from llm.router import Router
 from models.types import AttackScenario, SimulationProof, EnvFailureResult, Finding
@@ -32,22 +33,44 @@ async def phase4_judge(
     findings = []
 
     for scenario, (proof, env_result) in zip(scenarios, simulation_results):
-        if not proof.confirmed and not env_result:
-            continue
+        # V-2: Confirmed ONLY from HonestSignal/ExploitResult
+        # Expand the exploit_result from SimulationProof into the Finding.
+        # If neither confirmed nor needs_review from HonestSignal, skip.
+        if not proof.exploit_result:
+            # No HonestSignal result — old pipeline path or missing data
+            # Only keep if there's env simulation
+            if env_result and env_result.simulated:
+                pass  # create finding with needs_review below
+            else:
+                continue
+
+        confirmed = bool(proof.exploit_result and proof.exploit_result.confirmed)
+        needs_review = bool(proof.exploit_result and proof.exploit_result.needs_review)
 
         severity = _estimate_severity(scenario, proof)
-        findings.append(Finding(
+        finding = Finding(
             title=scenario.name,
             severity=severity,
             description=scenario.description,
             affected_functions=[scenario.entry_point],
             attack_scenario=scenario,
-            simulation=proof if proof.confirmed else None,
+            simulation=proof if confirmed or needs_review else None,
             env_failure=env_result if env_result and env_result.simulated else None,
-            confirmed=proof.confirmed or bool(env_result and env_result.simulated),
             category=scenario.attack_vector,
             remediation=_suggest_remediation(scenario),
-        ))
+            exploit_result=proof.exploit_result,
+            confirmed=confirmed,
+            needs_review=needs_review,
+        )
+
+        # V-1: Env simulation alone => needs review, NOT confirmed
+        if not confirmed and not needs_review and env_result and env_result.simulated:
+            finding.needs_review = True
+            finding.description += (
+                f"\n\n[Environment Simulation] {env_result.description}"
+            )
+
+        findings.append(finding)
 
     findings.sort(key=lambda f: _severity_score(f.severity), reverse=True)
     findings = findings[:max_findings]
@@ -73,7 +96,7 @@ async def _llm_discriminate(
         indent=2,
     )
 
-    resp = router.call("judge", JUDGE_SYSTEM_PROMPT, findings_json, temperature=0.3, max_tokens=2048)
+    resp = await asyncio.to_thread(router.call, "judge", JUDGE_SYSTEM_PROMPT, findings_json, temperature=0.3, max_tokens=2048)
 
     if resp.success and resp.content:
         try:
@@ -110,7 +133,7 @@ async def _generate_report(
         indent=2,
     )
 
-    resp = router.call("documenter", DOCUMENTER_SYSTEM_PROMPT, findings_json, temperature=0.4, max_tokens=4096)
+    resp = await asyncio.to_thread(router.call, "documenter", DOCUMENTER_SYSTEM_PROMPT, findings_json, temperature=0.4, max_tokens=4096)
 
     if resp.success and resp.content:
         return resp.content
@@ -134,9 +157,11 @@ def _simple_report(findings: list[Finding]) -> str:
 
 
 def _estimate_severity(scenario: AttackScenario, proof: SimulationProof) -> str:
-    if proof.confirmed and proof.llm_verified:
-        return "critical" if "drain" in scenario.estimated_impact.lower() else "high"
-    if proof.confirmed:
+    if proof.exploit_result and proof.exploit_result.confirmed:
+        if proof.exploit_result.attacker_profit and "ether" in str(proof.exploit_result.attacker_profit).lower():
+            return "critical"
+        if "drain" in scenario.estimated_impact.lower():
+            return "critical"
         return "high"
     return "medium"
 

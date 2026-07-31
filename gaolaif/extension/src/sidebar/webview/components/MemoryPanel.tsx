@@ -1,4 +1,5 @@
 import React from 'react';
+import { Icon } from './Icon';
 import type { MemoryEntry } from '../types';
 
 interface Props {
@@ -15,8 +16,9 @@ export function MemoryPanel({ entries, label, color }: Props) {
   return (
     <div style={{ marginTop: 8 }}>
       {hasDegraded && (
-        <div style={{ color: '#F59E0B', fontSize: 10, padding: '4px 8px', background: '#F59E0B10', borderRadius: 4, marginBottom: 6 }}>
-          {'\u26A0'} Memory running in degraded mode &mdash; Ollama offline. Similarity suggestions may be unreliable.
+        <div style={{ color: '#F59E0B', fontSize: 10, padding: '4px 8px', background: '#F59E0B10', borderRadius: 4, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 4 }}>
+          <Icon name="warning" size={12} />
+          Memory running in degraded mode &mdash; Ollama offline. Similarity suggestions may be unreliable.
         </div>
       )}
       <div style={{
@@ -39,8 +41,9 @@ export function MemoryPanel({ entries, label, color }: Props) {
             </div>
           )}
           {entry.warning && (
-            <div style={{ color: '#F97316', marginBottom: 2 }}>
-              {'\u26A0'} {entry.warning}
+            <div style={{ color: '#F97316', marginBottom: 2, display: 'flex', alignItems: 'center', gap: 4 }}>
+              <Icon name="warning" size={10} />
+              {entry.warning}
             </div>
           )}
           {entry.idea && (

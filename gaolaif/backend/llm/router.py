@@ -37,7 +37,8 @@ class LLMResponse:
 
 class Router:
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
+        # Explicit None means "read from env"; empty string means "explicitly not configured"
+        self.api_key = api_key if api_key is not None else os.environ.get("OPENROUTER_API_KEY", "")
         self._client: Optional[httpx.Client] = None
 
     def _get_client(self) -> httpx.Client:

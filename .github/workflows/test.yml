@@ -1,0 +1,56 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  python-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          cd gaolaif/backend
+          pip install -r requirements.txt
+
+      - name: Run pytest
+        run: |
+          cd gaolaif/backend
+          python -m pytest tests/ firewall/tests/ -v --tb=short
+
+      - name: Run runtime verification
+        run: python runtime_verification/verify_all.py
+
+  extension-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install extension dependencies
+        run: |
+          cd gaolaif/extension
+          npm ci
+
+      - name: Run jest tests
+        run: |
+          cd gaolaif/extension
+          npx jest
+
+      - name: Build extension
+        run: |
+          cd gaolaif/extension
+          npx webpack --mode production

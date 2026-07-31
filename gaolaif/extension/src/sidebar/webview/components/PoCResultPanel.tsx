@@ -1,4 +1,5 @@
 import React from 'react';
+import { Icon } from './Icon';
 import type { PoCResult } from '../types';
 
 interface Props {
@@ -11,8 +12,10 @@ export function PoCResultPanel({ result }: Props) {
       <div style={{
         fontSize: 10, color: result.confirmed ? '#22C55E' : '#EF4444',
         fontWeight: 700, marginBottom: 6, letterSpacing: '0.1em',
+        display: 'flex', alignItems: 'center', gap: 4,
       }}>
-        {result.confirmed ? '\u2713 EXPLOIT CONFIRMED' : '\u2717 NOT EXPLOITABLE'}
+        <Icon name={result.confirmed ? 'checkCircle' : 'x'} size={12} />
+        {result.confirmed ? 'EXPLOIT CONFIRMED' : 'NOT EXPLOITABLE'}
       </div>
 
       {result.attack_vector && (

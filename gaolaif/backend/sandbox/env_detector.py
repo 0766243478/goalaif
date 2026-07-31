@@ -1,5 +1,5 @@
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -83,4 +83,4 @@ def is_move(file_path: str, content: str = "") -> bool:
     return detect_language(file_path, content).language == "move"
 
 
-from dataclasses import field
+

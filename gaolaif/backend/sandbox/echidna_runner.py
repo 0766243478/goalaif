@@ -6,7 +6,7 @@ import shutil
 import tempfile
 from pathlib import Path
 from typing import Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -21,8 +21,8 @@ class EchidnaResult:
 ECHIDNA_CANDIDATES = [
     "echidna",
     "echidna.exe",
-    r"C:\tools\echidna\echidna.exe",
-    r"C:\Users\humos\.cargo\bin\echidna.exe",
+    str(Path.home() / ".cargo" / "bin" / "echidna"),
+    str(Path.home() / ".cargo" / "bin" / "echidna.exe"),
 ]
 
 
@@ -81,7 +81,7 @@ def run_echidna(source_code: str, victim_name: str = "VulnerableVault") -> Echid
         try:
             result = subprocess.run(
                 [str(echidna_exe), str(inv_file), "--contract", "EchidnaInvariants",
-                 "--config", "{}", "--test-limit", "10000", "--seq-len", "100"],
+                 "--test-limit", "10000", "--seq-len", "100"],
                 capture_output=True,
                 text=True,
                 timeout=180,
@@ -104,4 +104,4 @@ def run_echidna(source_code: str, victim_name: str = "VulnerableVault") -> Echid
     )
 
 
-from dataclasses import field
+

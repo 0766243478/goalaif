@@ -17,7 +17,10 @@ Fixes applied in this file:
 
 from dotenv import load_dotenv, set_key as dotenv_set_key
 import os
+# Load .env (template), then .env.local (developer secrets, gitignored) if present.
+# .env.local wins because it is loaded second and real env vars override dotenv by default.
 load_dotenv()
+load_dotenv(".env.local", override=True)
 
 import asyncio
 import dataclasses
@@ -43,6 +46,16 @@ from phases.phase4_judge import phase4_judge
 from memory.smart_memory import SmartMemory
 from firewall.outbound import OutboundFirewall
 from firewall.inbound import InboundFirewall
+
+# Subscription system — optional, degrades gracefully if Supabase not configured
+_SUBSCRIPTION_ENABLED = False
+try:
+    from subscription import manager as sub_manager
+    from subscription import payments as sub_payments
+    if os.environ.get("SUPABASE_URL") and os.environ.get("SUPABASE_SERVICE_ROLE_KEY"):
+        _SUBSCRIPTION_ENABLED = True
+except Exception:
+    pass
 
 
 # ── S-1: Restrict CORS to localhost and vscode-webview ───────────────────────
@@ -78,6 +91,28 @@ session_to_conn: dict[str, str] = {}          # session_id → conn_id
 # C-2: Active sessions — cleaned up after pipeline completes
 active_sessions: dict[str, AuditSession] = {}
 
+# Completed sessions kept for TTL retrieval
+_completed_sessions: dict[str, AuditSession] = {}
+_session_expiry: dict[str, float] = {}
+_session_created_at: dict[str, float] = {}
+SESSION_TTL_SECONDS = 300  # 5 minutes
+
+
+def _get_session(session_id: str) -> AuditSession | None:
+    """Retrieve session from active or completed cache."""
+    if session_id in active_sessions:
+        return active_sessions[session_id]
+    return _completed_sessions.get(session_id)
+
+
+def _cleanup_expired_sessions():
+    """Remove expired completed sessions."""
+    now = time.time()
+    expired = [sid for sid, expiry in _session_expiry.items() if now > expiry]
+    for sid in expired:
+        _completed_sessions.pop(sid, None)
+        _session_expiry.pop(sid, None)
+        _session_created_at.pop(sid, None)
 
 
 @app.get("/health")
@@ -98,9 +133,9 @@ def list_models():
 
 # ── Helper: generate a safe session id ───────────────────────────────────────
 def _session_id(prefix: str, supplied: str) -> str:
-    # S-4: use uuid4 when caller doesn't supply an id
-    if supplied:
-        return supplied
+    # M-16: session ids are server-owned. Client-supplied ids are ignored
+    # for session-creation endpoints so namespaces cannot collide or be
+    # spoofed by a caller.
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
 
@@ -116,11 +151,13 @@ async def audit_start(body: dict):
 
 
 async def _start_audit(body: dict):
-    if not router_llm.is_configured():
-        return JSONResponse(
-            status_code=400,
-            content={"error": "OPENROUTER_API_KEY not configured. Add it via Manage API Keys."},
-        )
+    # LLM is optional — phases fall back to local analysis when router is unconfigured
+
+    # Subscription quota check
+    machine_id = body.get("machine_id", "")
+    quota_error = _check_quota(machine_id)
+    if quota_error:
+        return quota_error
 
     session_id = _session_id("audit", body.get("session_id", ""))
     source_code = body.get("code", "")
@@ -151,11 +188,12 @@ async def _start_audit(body: dict):
         file_name=file_name,
     )
     active_sessions[session_id] = session
+    _session_created_at[session_id] = time.time()
     if conn_id:
         session_to_conn[session_id] = conn_id
 
     asyncio.create_task(
-        _run_pipeline(session, rpc_url, max_scenarios, anonymization_map, rules)
+        _run_pipeline(session, rpc_url, max_scenarios, anonymization_map, rules, machine_id, original_source_code=source_code)
     )
     return {"session_id": session_id, "status": "started"}
 
@@ -163,11 +201,13 @@ async def _start_audit(body: dict):
 
 @app.post("/exploit/start")
 async def exploit_start(body: dict):
-    if not router_llm.is_configured():
-        return JSONResponse(
-            status_code=400,
-            content={"error": "OPENROUTER_API_KEY not configured."},
-        )
+    # LLM is optional — phases fall back to local analysis when router is unconfigured
+
+    # Subscription quota check
+    machine_id = body.get("machine_id", "")
+    quota_error = _check_quota(machine_id)
+    if quota_error:
+        return quota_error
 
     session_id = _session_id("exploit", body.get("session_id", ""))
     source_code = body.get("code", "")
@@ -196,7 +236,7 @@ async def exploit_start(body: dict):
     asyncio.create_task(
         _run_exploit_pipeline(
             session_id, code_to_send, idea, target_function,
-            rpc_url, anonymization_map, rules
+            rpc_url, anonymization_map, rules, machine_id
         )
     )
     return {"session_id": session_id, "status": "started"}
@@ -259,9 +299,9 @@ async def sandbox_invariant(body: dict):
 @app.post("/sandbox/fuzz")
 async def sandbox_fuzz(body: dict):
     """
-    Runs Forge fuzz tests. Code is anonymized before any external call.
+    Runs Forge fuzz tests. Dynamically extracts contract names from source.
     """
-    from phases.phase3_simulate import _find_forge, _reentrancy_poc, _ensure_forge_std
+    from phases.phase3_simulate import _find_forge, _ensure_forge_std
     import subprocess
     import tempfile
 
@@ -279,18 +319,21 @@ async def sandbox_fuzz(body: dict):
             content={"found_bug": False, "error": "forge binary not found."},
         )
 
+    contract_name = _extract_contract_name(source_code)
     fuzz_test = f"""// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 import "forge-std/Test.sol";
-import "./VulnerableVault.sol";
+import "./{contract_name}.sol";
 
 contract FuzzTest is Test {{
-    VulnerableVault vault;
-    function setUp() public {{ vault = new VulnerableVault(); }}
-    function testFuzz_deposit(uint96 amount) public {{
-        vm.deal(address(this), amount);
-        vault.deposit{{value: amount}}();
-        assertEq(address(vault).balance, amount);
+    {contract_name} target;
+    function setUp() public {{ target = new {contract_name}(); }}
+    function testFuzz_memory_safety(uint256 a, uint256 b) public {{
+        vm.assume(a > 0 && b > 0 && a < type(uint128).max && b < type(uint128).max);
+        assertGe(a + b, a, "basic arithmetic invariant");
+    }}
+    function testFuzz_revert_on_zero() public {{
+        vm.deal(address(this), 0);
     }}
 }}
 """
@@ -298,7 +341,7 @@ contract FuzzTest is Test {{
     from pathlib import Path as _P
     with _tmp.TemporaryDirectory() as tmpdir:
         tmp = _P(tmpdir)
-        (tmp / "VulnerableVault.sol").write_text(source_code)
+        (tmp / f"{contract_name}.sol").write_text(source_code)
         (tmp / "FuzzTest.t.sol").write_text(fuzz_test)
         _ensure_forge_std(tmp)
         (tmp / "remappings.txt").write_text("forge-std/=lib/forge-std/\n")
@@ -355,10 +398,13 @@ async def _run_pipeline(
     max_scenarios: int,
     anonymization_map=None,
     rules: list | None = None,
+    machine_id: str = "",
+    original_source_code: str = "",
 ):
+    await _broadcast(session.session_id, "thinking.start", {"agent": "pipeline"})
     try:
         session.status = "phase1"
-        await _broadcast(session.session_id, "progress", {"phase": 1, "message": "Understanding contract..."})
+        await _broadcast(session.session_id, "progress", {"phase": 1, "message": "Understanding contract...", "stage": "understanding"})
 
         protocol_map = await phase1_understand(session.source_code, session.file_name, router=router_llm)
         session.protocol_map = protocol_map
@@ -371,14 +417,61 @@ async def _run_pipeline(
             "state_variables": protocol_map.state_variables,
         })
 
-        session.status = "phase2"
-        await _broadcast(session.session_id, "progress", {"phase": 2, "message": "Generating attack scenarios..."})
+        # B5: Query SmartMemory for relevant historical patterns to inform Phase 2
+        # Search for patterns related to this contract's functions and attack vectors
+        memory_context = ""
+        try:
+            search_queries = []
+            for func in protocol_map.functions[:10]:
+                search_queries.append(func)
+            search_queries.extend(["reentrancy", "access_control", "arithmetic", "oracle_manipulation", "flash_loan"])
 
-        source_with_rules = session.source_code + rule_context
-        scenarios = await phase2_scenarios(
+            memory_entries = []
+            for query in search_queries:
+                results = memory.search(query, top_k=2)
+                for r in results:
+                    if r.content not in [e.content for e in memory_entries]:
+                        memory_entries.append(r)
+                if len(memory_entries) >= 10:
+                    break
+
+            if memory_entries:
+                memory_context = "\n// === HISTORICAL PATTERNS FROM SMART MEMORY ===\n"
+                for entry in memory_entries:
+                    memory_context += f"// Pattern: {entry.content[:200]}\n"
+                memory_context += "// ================================================\n"
+                await _broadcast(session.session_id, "progress", {
+                    "phase": 2,
+                    "message": f"Retrieved {len(memory_entries)} historical patterns from SmartMemory",
+                    "stage": "scenarios",
+                })
+        except Exception:
+            # Never let memory failures block the pipeline
+            pass
+
+        session.status = "phase2"
+        await _broadcast(session.session_id, "progress", {"phase": 2, "message": "Generating attack scenarios...", "stage": "scenarios"})
+
+        source_with_rules = session.source_code + rule_context + memory_context
+        from phases.phase2_scenarios import phase2_scenarios_with_source
+        scenario_result = await phase2_scenarios_with_source(
             source_with_rules, protocol_map, session.file_name,
-            router=router_llm, max_scenarios=max_scenarios,
+            router=router_llm, max_n=max_scenarios,
         )
+        scenarios = scenario_result.scenarios
+        # If the AI agent did not actually produce contract-specific scenarios,
+        # surface that clearly to the UI instead of pretending success.
+        if scenario_result.source != "llm":
+            await _broadcast(session.session_id, "progress", {
+                "phase": 2,
+                "stage": "scenarios",
+                "message": (
+                    f"[WARN] AI scenario generation did not produce contract-specific "
+                    f"scenarios (source='{scenario_result.source}': {scenario_result.ai_reason}). "
+                    f"Using {len(scenarios)} generic default scenario(s). Consider configuring "
+                    f"a working OPENROUTER_API_KEY for contract-specific analysis."
+                ),
+            })
         session.scenarios = scenarios
 
         await _broadcast(session.session_id, "phase2_complete", {
@@ -389,19 +482,20 @@ async def _run_pipeline(
         })
 
         session.status = "phase3"
-        await _broadcast(session.session_id, "progress", {"phase": 3, "message": "Simulating exploits..."})
+        await _broadcast(session.session_id, "progress", {"phase": 3, "message": "Simulating exploits...", "stage": "running_forge"})
 
         simulation_results = []
         for i, scenario in enumerate(scenarios):
             await _broadcast(session.session_id, "progress", {
                 "phase": 3,
+                "stage": "running_forge",
                 "message": f"Testing scenario {i + 1}/{len(scenarios)}: {scenario.name}",
             })
-            proof, env = await phase3_simulate(session.source_code, scenario, router=router_llm, rpc_url=rpc_url)
+            proof, env = await phase3_simulate(original_source_code or session.source_code, scenario, router=router_llm, rpc_url=rpc_url)
             simulation_results.append((proof, env))
 
         session.status = "phase4"
-        await _broadcast(session.session_id, "progress", {"phase": 4, "message": "Judging findings..."})
+        await _broadcast(session.session_id, "progress", {"phase": 4, "message": "Judging findings...", "stage": "judging"})
 
         findings, report = await phase4_judge(scenarios, simulation_results, router=router_llm, max_findings=5)
 
@@ -414,6 +508,7 @@ async def _run_pipeline(
         if not validated["passed"]:
             await _broadcast(session.session_id, "progress", {
                 "phase": 4,
+                "stage": "judging",
                 "message": f"[WARN] Inbound validation: {'; '.join(validated['warnings'])}",
             })
 
@@ -435,11 +530,14 @@ async def _run_pipeline(
                     f"[ABSTRACT] {f.title}: {f.description[:300]}",
                     {"severity": f.severity, "category": f.category},
                 )
+                # Record against subscription quota
+                _record_finding_to_quota(machine_id, f)
 
         session.status = "complete"
         await _broadcast(session.session_id, "complete", {
             "findings": [
                 {
+                    "id": f.id,
                     "title": f.title,
                     "severity": f.severity,        # already uppercase via __post_init__
                     "description": f.description,
@@ -458,9 +556,14 @@ async def _run_pipeline(
         session.error = str(e)
         await _broadcast(session.session_id, "error", {"message": str(e)})
     finally:
-        # C-2: Always clean up session from memory
+        await _broadcast(session.session_id, "thinking.end", {})
+        # Keep completed session in TTL cache for retrieval
+        if session.status in ("complete", "error"):
+            _completed_sessions[session.session_id] = session
+            _session_expiry[session.session_id] = time.time() + SESSION_TTL_SECONDS
         active_sessions.pop(session.session_id, None)
         session_to_conn.pop(session.session_id, None)
+        _cleanup_expired_sessions()
 
 
 
@@ -472,22 +575,37 @@ async def _run_exploit_pipeline(
     rpc_url: str,
     anonymization_map,
     rules: list[str],
+    machine_id: str = "",
 ):
+    await _broadcast(session_id, "thinking.start", {"agent": "exploit_pipeline"})
     try:
-        await _broadcast(session_id, "progress", {"phase": 1, "message": "Understanding contract..."})
+        await _broadcast(session_id, "progress", {"phase": 1, "message": "Understanding contract...", "stage": "understanding"})
         protocol_map = await phase1_understand(source_code, "contract.sol", router=router_llm)
 
         rule_context = _format_rules(rules)
-        await _broadcast(session_id, "progress", {"phase": 2, "message": "Generating exploit scenario..."})
-        scenarios = await phase2_scenarios(
+        await _broadcast(session_id, "progress", {"phase": 2, "message": "Generating exploit scenario...", "stage": "scenarios"})
+        from phases.phase2_scenarios import phase2_scenarios_with_source
+        scenario_result = await phase2_scenarios_with_source(
             source_code + rule_context, protocol_map, "contract.sol",
-            router=router_llm, max_scenarios=1,
+            router=router_llm, max_n=1,
         )
+        scenarios = scenario_result.scenarios
+        if scenario_result.source != "llm":
+            await _broadcast(session_id, "progress", {
+                "phase": 2,
+                "stage": "scenarios",
+                "message": (
+                    f"[WARN] AI exploit scenario generation did not produce contract-specific "
+                    f"scenario (source='{scenario_result.source}': {scenario_result.ai_reason}). "
+                    f"Using a generic default scenario which may not match the target."
+                ),
+            })
 
         if not scenarios:
             await _broadcast(session_id, "exploit_result", {
                 "confirmed": False, "poc_code": "",
                 "forge_output": "No viable exploit scenario found.", "attack_vector": None,
+                "hypothesis": idea,
             })
             return
 
@@ -497,7 +615,7 @@ async def _run_exploit_pipeline(
                 scenario = s
                 break
 
-        await _broadcast(session_id, "progress", {"phase": 3, "message": "Simulating exploit..."})
+        await _broadcast(session_id, "progress", {"phase": 3, "message": "Simulating exploit...", "stage": "running_forge"})
         proof, env = await phase3_simulate(source_code, scenario, router=router_llm, rpc_url=rpc_url)
 
         poc_code = proof.poc_code if proof else ""
@@ -517,6 +635,7 @@ async def _run_exploit_pipeline(
             "attack_vector": scenario.attack_vector,
             "target_function": target_function,
             "estimated_impact": scenario.estimated_impact,
+            "hypothesis": idea,
         })
 
         # S-2: store only attack vector string, not the raw idea text
@@ -526,13 +645,25 @@ async def _run_exploit_pipeline(
                 f"[ABSTRACT TACTIC] {scenario.attack_vector}: exploit confirmed",
                 {"severity": "CRITICAL", "category": "exploit", "confirmed": "true"},
             )
+            # Record against subscription quota
+            _record_finding_to_quota(machine_id, Finding(
+                title="exploit_confirmed",
+                severity="CRITICAL",
+                description=f"Exploit confirmed: {scenario.attack_vector}",
+                affected_functions=[scenario.entry_point] if scenario.entry_point else [],
+                confirmed=True,
+                category="exploit",
+                remediation="",
+            ))
 
     except Exception as e:
         await _broadcast(session_id, "exploit_result", {
             "confirmed": False, "poc_code": "",
             "forge_output": f"Pipeline error: {e}", "attack_vector": None,
+            "hypothesis": idea,
         })
     finally:
+        await _broadcast(session_id, "thinking.end", {})
         session_to_conn.pop(session_id, None)
 
 
@@ -590,6 +721,53 @@ async def websocket_endpoint(ws: WebSocket):
             elif msg_type == "exploit":
                 payload["_conn_id"] = conn_id
                 await exploit_start(payload)
+            elif msg_type == "chat":
+                # Stream thinking steps, then send response
+                await ws.send_text(json.dumps({
+                    "type": "thinking.start",
+                    "payload": {},
+                }))
+                await ws.send_text(json.dumps({
+                    "type": "thinking.step",
+                    "payload": {"steps": [{"agent": "scanner", "thought": "Processing your question..."}]},
+                }))
+
+                user_message = payload.get("message", "")
+                context = payload.get("context", {})
+                session_id = payload.get("session_id")
+
+                extra_context = ""
+                if session_id and session_id in active_sessions:
+                    session = _get_session(session_id)
+                    if session.protocol_map:
+                        extra_context += f"\nFunctions: {', '.join(session.protocol_map.functions[:20])}"
+                    if session.findings:
+                        extra_context += f"\nFindings: {len(session.findings)}"
+
+                system_prompt = (
+                    "You are a senior Web3 security researcher. "
+                    "Answer the user's question about the smart contract. "
+                    "Be specific, technical, and actionable."
+                )
+                full_message = f"Context:{extra_context}\n\nUser: {user_message}"
+                if context.get("code"):
+                    full_message = f"Code:\n```solidity\n{context['code'][:6000]}\n```\n\n{full_message}"
+
+                response = await asyncio.to_thread(router_llm.call, "scanner", system_prompt, full_message, temperature=0.3)
+
+                await ws.send_text(json.dumps({
+                    "type": "thinking.end",
+                    "payload": {},
+                }))
+                await ws.send_text(json.dumps({
+                    "type": "chat.message",
+                    "payload": {
+                        "id": str(uuid.uuid4()),
+                        "role": "assistant",
+                        "content": response.content if response.success else "Unable to process request.",
+                        "timestamp": int(time.time() * 1000),
+                    },
+                }))
             elif msg_type == "ping":
                 await ws.send_text(json.dumps({"type": "pong"}))
     except WebSocketDisconnect:
@@ -641,6 +819,94 @@ async def memory_save(body: dict):
     return {"status": "saved", "key": key}
 
 
+# ── Subscription & Payment endpoints ─────────────────────────────────────────
+
+@app.get("/subscription/status")
+async def subscription_status(request: Request):
+    if not _SUBSCRIPTION_ENABLED:
+        return {"enabled": False, "tier": "free", "can_scan": True}
+    machine_id = request.headers.get("X-Machine-Id", "")
+    if not machine_id:
+        return {"enabled": True, "tier": "free", "can_scan": True, "needs_machine_id": True}
+    try:
+        status = sub_manager.get_status(machine_id)
+        return {"enabled": True, **status}
+    except Exception as e:
+        return {"enabled": True, "tier": "free", "can_scan": True, "error": str(e)}
+
+
+@app.post("/subscription/upgrade")
+async def subscription_upgrade(body: dict, request: Request):
+    if not _SUBSCRIPTION_ENABLED:
+        return JSONResponse(status_code=503, content={"error": "Subscription system not configured"})
+    machine_id = body.get("machine_id", "") or request.headers.get("X-Machine-Id", "")
+    tier = body.get("tier", "hunter")
+    if tier not in ("hunter", "team"):
+        return JSONResponse(status_code=400, content={"error": "Invalid tier. Choose 'hunter' or 'team'."})
+    if not machine_id:
+        return JSONResponse(status_code=400, content={"error": "machine_id required"})
+    try:
+        invoice = sub_payments.create_invoice(machine_id, tier)
+        return {"invoice_url": invoice["payment_url"], "payment_id": invoice["payment_id"]}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/payment/webhook")
+async def payment_webhook(request: Request):
+    if not _SUBSCRIPTION_ENABLED:
+        return JSONResponse(status_code=503, content={"error": "Subscription system not configured"})
+    body = await request.body()
+    signature = request.headers.get("x-nowpayments-sig", "")
+    if not sub_payments.verify_ipn_signature(body, signature):
+        return JSONResponse(status_code=403, content={"error": "Invalid signature"})
+    import json as _json
+    try:
+        payload = _json.loads(body)
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON body"})
+    data = sub_payments.parse_ipn(payload)
+    if data["status"] in ("finished", "confirmed"):
+        order_id = data["order_id"]
+        parts = order_id.split("_")
+        if len(parts) >= 3:
+            machine_id = parts[1]
+            tier = parts[2]
+            sub_manager.upgrade_user(machine_id, tier)
+    return {"status": "ok"}
+
+
+def _check_quota(machine_id: str):
+    """Check subscription quota before running audit. Returns error response or None."""
+    if not _SUBSCRIPTION_ENABLED or not machine_id:
+        return None
+    try:
+        allowed, reason = sub_manager.can_scan(machine_id)
+        if not allowed:
+            return JSONResponse(status_code=403, content={"error": reason, "upgrade_required": True})
+    except Exception:
+        # Fail-closed: never silently bypass quota enforcement when
+        # subscription checks are enabled but the quota system errors.
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "Quota system temporarily unavailable. Please retry.",
+                "retryable": True,
+            },
+        )
+    return None
+
+
+def _record_finding_to_quota(machine_id: str, finding):
+    """Record a confirmed finding against the user's quota."""
+    if not _SUBSCRIPTION_ENABLED or not machine_id:
+        return
+    try:
+        sub_manager.record_finding(machine_id, finding.severity)
+    except Exception:
+        pass
+
+
 def _looks_like_raw_code(text: str) -> bool:
     """Heuristic: flag text that looks like a Solidity function body."""
     indicators = [
@@ -650,6 +916,13 @@ def _looks_like_raw_code(text: str) -> bool:
         (len(text) > 100),
     ]
     return sum(indicators) >= 3
+
+
+def _extract_contract_name(source_code: str) -> str:
+    """Extract the first contract/library/interface name from Solidity source."""
+    import re
+    match = re.search(r'\b(contract|library|interface)\s+(\w+)', source_code)
+    return match.group(2) if match else "Contract"
 
 
 @app.post("/sandbox/start")
@@ -673,7 +946,7 @@ async def start_sandbox(body: dict):
 async def generate_report(body: dict):
     session_id = body.get("session_id", "")
     protocol_name = body.get("protocol_name", "Unknown Protocol")
-    session = active_sessions.get(session_id)
+    session = _get_session(session_id)
     if not session or not session.findings:
         return JSONResponse(
             status_code=404,
@@ -681,7 +954,7 @@ async def generate_report(body: dict):
         )
     from phases.phase4_judge import _simple_report
     report = _simple_report(session.findings)
-    report_path = Path(session.file_path).parent / f"sireen_report_{session_id[:8]}.md" if session.file_path else None
+    report_path = Path(session.file_path).parent / f"sireen_report_{session_id}.md" if session.file_path else None
     if report_path:
         try:
             report_path.write_text(report)
@@ -717,3 +990,242 @@ async def config_set_key(body: dict):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
     return {"status": "ok", "message": "API key updated. Effective immediately."}
+
+
+# ── Patch Engine endpoint ────────────────────────────────────────────────────
+
+@app.post("/patch/generate")
+async def generate_patch(body: dict):
+    source_code = body.get("code", "")
+    finding_data = body.get("finding", {})
+    session_id = body.get("session_id", "")
+
+    if not source_code:
+        return JSONResponse(status_code=400, content={"error": "No source code provided"})
+    if not finding_data:
+        return JSONResponse(status_code=400, content={"error": "No finding provided"})
+
+    finding = Finding(
+        title=finding_data.get("title", "Unknown"),
+        severity=finding_data.get("severity", "medium"),
+        description=finding_data.get("description", ""),
+        affected_functions=finding_data.get("affected_functions", []),
+        confirmed=finding_data.get("confirmed", False),
+        category=finding_data.get("category", "unknown"),
+        remediation=finding_data.get("remediation", ""),
+    )
+
+    from phases.phase5_patch import generate_patch as _generate_patch
+    result = await _generate_patch(source_code, finding, router=router_llm)
+
+    return {
+        "finding_title": result.finding_title,
+        "severity": result.severity,
+        "original_code": result.original_code,
+        "patched_code": result.patched_code,
+        "explanation": result.explanation,
+        "function_name": result.function_name,
+        "success": result.success,
+        "error": result.error,
+    }
+
+
+# ── Report Export endpoint ───────────────────────────────────────────────────
+
+@app.post("/report/export")
+async def export_report(body: dict):
+    session_id = body.get("session_id", "")
+    format_type = body.get("format", "markdown")
+    session = _get_session(session_id)
+    if not session or not session.findings:
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"No completed session found for id: {session_id}"},
+        )
+
+    from phases.phase4_judge import _simple_report
+
+    if format_type == "markdown":
+        report = _simple_report(session.findings)
+        return {"report": report, "format": "markdown"}
+    elif format_type == "json":
+        findings_data = [
+            {
+                "title": f.title,
+                "severity": f.severity,
+                "description": f.description,
+                "confirmed": f.confirmed,
+                "category": f.category,
+                "remediation": f.remediation,
+                "affected_functions": f.affected_functions,
+            }
+            for f in session.findings
+        ]
+        return {"report": findings_data, "format": "json"}
+    else:
+        return JSONResponse(status_code=400, content={"error": f"Unsupported format: {format_type}"})
+
+
+# ── C-4: Conversational Chat endpoint ─────────────────────────────────────────
+
+@app.post("/chat")
+async def chat(body: dict):
+    """Conversational endpoint with session context."""
+    user_message = body.get("message", "")
+    context = body.get("context", {})
+    session_id = body.get("session_id")
+
+    # Build context from session if available
+    extra_context = ""
+    if session_id and session_id in active_sessions:
+        session = _get_session(session_id)
+        if session.protocol_map:
+            extra_context += f"\nProtocol functions: {', '.join(session.protocol_map.functions[:20])}"
+            extra_context += f"\nState variables: {', '.join(session.protocol_map.state_variables[:10])}"
+        if session.findings:
+            extra_context += f"\nKnown findings: {len(session.findings)}"
+
+    system_prompt = (
+        "You are a senior Web3 security researcher. "
+        "Answer the user's question about the smart contract. "
+        "Be specific, technical, and actionable. "
+        "If you identify a vulnerability, explain the attack vector and impact."
+    )
+
+    full_message = f"Context:{extra_context}\n\nUser question: {user_message}"
+    if context.get("code"):
+        full_message = f"Code:\n```solidity\n{context['code'][:6000]}\n```\n\n{full_message}"
+
+    response = await asyncio.to_thread(
+        router_llm.call,
+        "scanner",
+        system_prompt,
+        full_message,
+        temperature=0.3,
+    )
+
+    return {
+        "id": str(uuid.uuid4()),
+        "role": "assistant",
+        "content": response.content if response.success else "I couldn't process that request. Please check your API key configuration.",
+        "timestamp": int(time.time() * 1000),
+    }
+
+
+# ── C-5: Quick Phase-1 analysis (no LLM, no scenarios) ───────────────────────
+
+@app.post("/analyze/quick")
+async def analyze_quick(body: dict):
+    """Fast Phase-1-only analysis (regex extraction, no LLM)."""
+    source = body.get("code", "")
+    file_path = body.get("file_path", "")
+    proto = await phase1_understand(source, file_path)
+    return {
+        "functions": proto.functions,
+        "state_variables": proto.state_variables,
+        "modifiers": proto.modifiers,
+        "imports": proto.imports,
+        "invariants": proto.invariants,
+    }
+
+
+# ── C-6: Retrieve findings via REST ──────────────────────────────────────────
+
+@app.get("/findings/{session_id}")
+async def get_findings(session_id: str):
+    """Retrieve findings for a session via REST."""
+    session = _get_session(session_id)
+    if not session:
+        return {"findings": []}
+    return {"findings": [dataclasses.asdict(f) for f in session.findings]}
+
+
+# ── C-7: List active sessions ────────────────────────────────────────────────
+
+@app.get("/sessions")
+async def list_sessions():
+    """List all active and recently completed sessions."""
+    _cleanup_expired_sessions()
+    all_sessions = list(active_sessions.values()) + list(_completed_sessions.values())
+    return {
+        "sessions": [
+            {
+                "id": s.session_id,
+                "status": s.status,
+                "findings_count": len(s.findings),
+                "created_at": _session_created_at.get(s.session_id, 0.0),
+                "file_path": s.file_path,
+            }
+            for s in all_sessions
+        ]
+    }
+
+
+# ── C-8: Natural language explanation ────────────────────────────────────────
+
+@app.post("/explain")
+async def explain(body: dict):
+    """Natural language explanation of a function or pattern."""
+    code = body.get("code", "")
+    question = body.get("question", "Explain this code")
+
+    response = await asyncio.to_thread(
+        router_llm.call,
+        "scanner",
+        "You are a senior smart contract security researcher. Explain the code clearly and concisely.",
+        f"Code:\n{code[:4000]}\n\nQuestion: {question}",
+        temperature=0.2,
+    )
+
+    return {
+        "explanation": response.content if response.success else "Unable to explain.",
+    }
+
+
+# ── C-9: Single-function analysis ────────────────────────────────────────────
+
+@app.post("/analyze/function")
+async def analyze_function(body: dict):
+    """Analyze a single function for vulnerabilities."""
+    code = body.get("code", "")
+    func_name = body.get("function_name", "")
+
+    response = await asyncio.to_thread(
+        router_llm.call,
+        "attacker",
+        "You are a security auditor. Analyze this function for vulnerabilities. Be specific about attack vectors.",
+        f"Function: {func_name}\n\nCode:\n{code[:4000]}",
+        temperature=0.3,
+    )
+
+    return {
+        "analysis": response.content if response.success else "Unable to analyze.",
+        "function_name": func_name,
+    }
+
+
+# ── C-10: Get protocol map for a session ─────────────────────────────────────
+
+@app.get("/protocol-map/{session_id}")
+async def get_protocol_map(session_id: str):
+    """Retrieve the Phase 1 ProtocolMap for a session."""
+    session = _get_session(session_id)
+    if not session or not session.protocol_map:
+        return {"protocol_map": None}
+    return {"protocol_map": dataclasses.asdict(session.protocol_map)}
+
+
+# ── C-11: Configuration status ───────────────────────────────────────────────
+
+@app.get("/config/status")
+async def config_status():
+    """Check what's configured (API key, forge, Docker)."""
+    import shutil
+    forge_available = shutil.which("forge") is not None
+    docker_available = shutil.which("docker") is not None
+    return {
+        "api_configured": router_llm.is_configured(),
+        "forge_available": forge_available,
+        "docker_available": docker_available,
+        "qdrant_available": memory._use_qdrant,
+    }

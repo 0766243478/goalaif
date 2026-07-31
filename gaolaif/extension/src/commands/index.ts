@@ -38,14 +38,75 @@ export function registerCommands(
       const current = config.get('mode', 'protocol');
       const next = current === 'protocol' ? 'hacker' : 'protocol';
       config.update('mode', next, vscode.ConfigurationTarget.Global);
-      vscode.window.showInformationMessage(`Gaolaif switched to ${next} mode`);
+      vscode.window.showInformationMessage(`Sireen switched to ${next} mode`);
+    }),
+    vscode.commands.registerCommand('sireen.openChat', () => {
+      sidebarProvider.postMessageToWebview({
+        command: 'sireen.navigate',
+        payload: { view: 'chat' },
+      });
+    }),
+    vscode.commands.registerCommand('sireen.openChatWithContext', (args?: any) => {
+      const editor = vscode.window.activeTextEditor;
+      let context: any = {};
+
+      if (editor) {
+        const selection = editor.selection;
+        const code = selection.isEmpty ? '' : editor.document.getText(selection);
+        context = {
+          file: editor.document.uri.fsPath,
+          code,
+          function: args?.function,
+          selection: selection.isEmpty ? undefined : {
+            startLine: selection.start.line + 1,
+            endLine: selection.end.line + 1,
+            code,
+          },
+        };
+      }
+
+      sidebarProvider.postMessageToWebview({
+        command: 'sireen.navigate',
+        payload: { view: 'chat' },
+      });
+
+      setTimeout(() => {
+        sidebarProvider.postMessageToWebview({
+          command: 'sireen.chat.context',
+          payload: context,
+        });
+      }, 100);
+    }),
+    vscode.commands.registerCommand('sireen.generateReport', () => {
+      handleGenerateReport(backendClient);
+    }),
+    vscode.commands.registerCommand('sireen.suggestPatch', async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) return;
+
+      const selection = editor.selection;
+      const code = selection.isEmpty ? editor.document.getText() : editor.document.getText(selection);
+
+      const result = await backendClient.post('/patch/generate', {
+        code,
+        finding: { title: 'Selected code', severity: 'MEDIUM', description: 'User-requested patch' },
+      });
+
+      if (result?.patched_code) {
+        const doc = await vscode.workspace.openTextDocument({
+          content: result.patched_code,
+          language: 'solidity',
+        });
+        vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside);
+      }
     })
   );
 }
 
 async function handleAnalyze(
   backendClient: BackendClient,
-  sidebarProvider: SidebarProvider
+  sidebarProvider: SidebarProvider,
+  explicitCode?: string
 ) {
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
@@ -53,17 +114,17 @@ async function handleAnalyze(
     return;
   }
   const selection = editor.selection;
-  const code = editor.document.getText(selection.isEmpty ? undefined : selection);
+  const code = explicitCode ?? editor.document.getText(selection.isEmpty ? undefined : selection);
   const filePath = editor.document.uri.fsPath;
   const language = filePath.endsWith('.sol') ? 'solidity' : filePath.endsWith('.move') ? 'move' : 'solidity';
 
   vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: 'Gaolaif: Analyzing...' },
+    { location: vscode.ProgressLocation.Notification, title: 'Sireen: Analyzing...' },
     async () => {
       try {
         const result = await backendClient.analyze(code, filePath, language);
-        sidebarProvider.postMessageToWebview({ type: 'analysisResult', payload: result });
-        vscode.window.showInformationMessage(`Gaolaif analysis complete: ${result.findings?.length || 0} findings`);
+        sidebarProvider.postMessageToWebview({ command: 'sireen.audit.complete', payload: result });
+        vscode.window.showInformationMessage(`Sireen analysis complete: ${result.findings?.length || 0} findings`);
       } catch (err: any) {
         vscode.window.showErrorMessage(`Analysis failed: ${err.message}`);
       }
@@ -80,6 +141,5 @@ async function handleAnalyzeCurrentFile(
     vscode.window.showErrorMessage('No active editor.');
     return;
   }
-  editor.selection = new vscode.Selection(0, 0, editor.document.lineCount - 1, 0);
-  await handleAnalyze(backendClient, sidebarProvider);
+  await handleAnalyze(backendClient, sidebarProvider, editor.document.getText());
 }

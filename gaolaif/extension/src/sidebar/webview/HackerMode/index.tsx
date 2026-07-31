@@ -4,14 +4,15 @@ import { PoCResultPanel } from '../components/PoCResultPanel';
 import { MoneyFlowVisualizer } from '../components/MoneyFlowVisualizer';
 import { AgentLog } from '../components/AgentLog';
 import { MemoryPanel } from '../components/MemoryPanel';
+import { Icon } from '../components/Icon';
 import type { PoCResult, MoneyFlowData, TacticEntry, ExploitStage } from '../types';
 
 interface Props {
-  sessionId: string | null;
-  setSessionId: (id: string | null) => void;
+  sessionId?: string | null;
+  setSessionId?: (id: string | null) => void;
 }
 
-export function HackerMode({ sessionId, setSessionId }: Props) {
+export function HackerMode({ sessionId = null, setSessionId = () => {} }: Props) {
   const [exploitIdea, setExploitIdea] = useState('');
   const [targetFunction, setTargetFunction] = useState('');
   const [selectedCode, setSelectedCode] = useState('');
@@ -63,6 +64,27 @@ export function HackerMode({ sessionId, setSessionId }: Props) {
         case 'memoryResult':
           setTactics(msg.entries || []);
           break;
+        // Standard pipeline events (dual delivery with custom events above)
+        case 'sireen.exploit.started':
+          if (msg.payload?.session_id) setSessionId(msg.payload.session_id);
+          setStatus('generating');
+          break;
+        case 'sireen.exploit.complete': {
+          const p = msg.payload || {};
+          setStatus(p.confirmed ? 'confirmed' : 'failed');
+          setPocResult({
+            confirmed: !!p.confirmed,
+            poc_code: p.poc_code || '',
+            forge_output: p.forge_output || '',
+            money_flow: p.money_flow,
+            attack_vector: p.attack_vector || '',
+            target_function: p.target_function || '',
+            estimated_impact: p.estimated_impact || '',
+          });
+          if (p.money_flow) setMoneyFlow(p.money_flow);
+          setExploitLog(prev => [...prev, p.confirmed ? 'Exploit confirmed.' : 'Exploit not reproduced.']);
+          break;
+        }
       }
     };
     window.addEventListener('message', handler);
@@ -125,11 +147,11 @@ export function HackerMode({ sessionId, setSessionId }: Props) {
           opacity: (!exploitIdea || status === 'generating') ? 0.5 : 1,
         }}
       >
-        {status === 'idle'       && '\u26A1 EXECUTE EXPLOIT'}
-        {status === 'generating' && '\u25CC Generating PoC...'}
-        {status === 'running'    && '\u25CC Running in Sandbox...'}
-        {status === 'confirmed'  && '\u2713 EXPLOIT CONFIRMED'}
-        {status === 'failed'     && '\u2717 Not Exploitable \u2014 Try Again'}
+        {status === 'idle'       && <><Icon name="zap" size={14} /> EXECUTE EXPLOIT</>}
+        {status === 'generating' && <><Icon name="loading" size={14} className="animate-spin" /> Generating PoC...</>}
+        {status === 'running'    && <><Icon name="loading" size={14} className="animate-spin" /> Running in Sandbox...</>}
+        {status === 'confirmed'  && <><Icon name="checkCircle" size={14} /> EXPLOIT CONFIRMED</>}
+        {status === 'failed'     && <><Icon name="warning" size={14} /> Not Exploitable &mdash; Try Again</>}
       </button>
 
       {pocResult && <PoCResultPanel result={pocResult} />}
@@ -148,9 +170,11 @@ export function HackerMode({ sessionId, setSessionId }: Props) {
             background: 'transparent', border: '1px solid #F59E0B',
             color: '#F59E0B', fontWeight: 700, fontSize: 11,
             borderRadius: 4, cursor: 'pointer', fontFamily: 'inherit',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
           }}
         >
-          {'\uD83D\uDCC4'} Generate Immunefi Report
+          <Icon name="fileText" size={14} />
+          Generate Immunefi Report
         </button>
       )}
 
@@ -160,3 +184,5 @@ export function HackerMode({ sessionId, setSessionId }: Props) {
     </div>
   );
 }
+
+export default HackerMode;

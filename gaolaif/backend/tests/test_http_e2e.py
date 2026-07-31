@@ -40,20 +40,20 @@ class TestHealthEndpoints:
 
 
 class TestAuditValidation:
-    def test_audit_requires_api_key_when_unconfigured(self, client):
-        r = client.post("/audit/start", json={"code": "contract C {}"})
-        if os.environ.get("OPENROUTER_API_KEY"):
-            assert r.status_code == 200
-        else:
-            assert r.status_code == 400
-            assert "OPENROUTER_API_KEY" in r.json()["error"]
+    def test_audit_works_without_api_key_local_fallback(self, client):
+        r = client.post("/audit/start", json={"code": "contract C { function f() public {} }"})
+        # With local fallback (no OPENROUTER_API_KEY), audit starts and uses DEFAULT_SCENARIOS
+        assert r.status_code == 200
+        body = r.json()
+        assert "session_id" in body
+        assert body["status"] == "started"
 
     def test_audit_requires_code(self, client):
         r = client.post("/audit/start", json={"code": ""})
         assert r.status_code == 400
         err = r.json()["error"].lower()
-        # API key is checked before empty-code validation when unconfigured
-        assert "source code" in err or "openrouter_api_key" in err
+        # API key check removed — now fails on empty code
+        assert "source code" in err
 
     def test_exploit_requires_idea(self, client):
         r = client.post(

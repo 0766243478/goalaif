@@ -1,8 +1,8 @@
 {
-  "name": "gaolaif",
-  "displayName": "Gaolaif — Web3 Security Workspace",
+  "name": "sireen",
+  "displayName": "Sireen -- Web3 Security Workspace",
   "description": "AI-native smart contract security workspace. Protocol protection + Ethical hacking. 100% local.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "HusseinMohammed",
   "engines": {
     "vscode": "^1.85.0"
@@ -27,6 +27,7 @@
     "url": "https://github.com/husseinhmed/gaolaif"
   },
   "activationEvents": [
+    "onStartupFinished",
     "onLanguage:solidity",
     "onLanguage:move",
     "workspaceContains:**/foundry.toml",
@@ -34,12 +35,36 @@
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "languages": [
+      {
+        "id": "solidity",
+        "aliases": [
+          "Solidity",
+          "solidity"
+        ],
+        "extensions": [
+          ".sol"
+        ],
+        "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "move",
+        "aliases": [
+          "Move",
+          "move"
+        ],
+        "extensions": [
+          ".move"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
     "viewsContainers": {
       "activitybar": [
         {
           "id": "gaolaif-sidebar",
-          "title": "Gaolaif",
-          "icon": "media/shield.svg"
+          "title": "Sireen",
+          "icon": "media/sireen-logo.png"
         }
       ]
     },
@@ -55,35 +80,51 @@
     "commands": [
       {
         "command": "gaolaif.auditSelection",
-        "title": "Gaolaif: Audit This Code"
+        "title": "Sireen: Audit This Code"
       },
       {
         "command": "gaolaif.exploitSelection",
-        "title": "Gaolaif: Try to Exploit This"
+        "title": "Sireen: Try to Exploit This"
       },
       {
         "command": "gaolaif.analyze",
-        "title": "Gaolaif: Analyze Selection"
+        "title": "Sireen: Analyze Selection"
       },
       {
         "command": "gaolaif.analyzeCurrentFile",
-        "title": "Gaolaif: Analyze Current File"
+        "title": "Sireen: Analyze Current File"
       },
       {
         "command": "gaolaif.runSandbox",
-        "title": "Gaolaif: Start Sandbox"
+        "title": "Sireen: Start Sandbox"
       },
       {
         "command": "gaolaif.generateReport",
-        "title": "Gaolaif: Generate Bug Bounty Report"
+        "title": "Sireen: Generate Bug Bounty Report"
       },
       {
         "command": "gaolaif.executePoC",
-        "title": "Gaolaif: ⚡ Execute PoC"
+        "title": "Sireen: Execute PoC"
       },
       {
         "command": "gaolaif.switchMode",
-        "title": "Gaolaif: Switch Mode (Protocol/Hacker)"
+        "title": "Sireen: Switch Mode (Protocol/Hacker)"
+      },
+      {
+        "command": "sireen.openChat",
+        "title": "Sireen: Open Chat"
+      },
+      {
+        "command": "sireen.openChatWithContext",
+        "title": "Sireen: Ask About This"
+      },
+      {
+        "command": "sireen.generateReport",
+        "title": "Sireen: Generate Report"
+      },
+      {
+        "command": "sireen.suggestPatch",
+        "title": "Sireen: Suggest Fix"
       }
     ],
     "menus": {
@@ -138,10 +179,26 @@
         "command": "gaolaif.executePoC",
         "key": "ctrl+shift+x",
         "mac": "cmd+shift+x"
+      },
+      {
+        "command": "sireen.openChat",
+        "key": "ctrl+shift+c",
+        "mac": "cmd+shift+c"
+      },
+      {
+        "command": "sireen.openChatWithContext",
+        "key": "ctrl+shift+alt+c",
+        "mac": "cmd+shift+alt+c",
+        "when": "editorHasSelection"
+      },
+      {
+        "command": "sireen.generateReport",
+        "key": "ctrl+shift+r",
+        "mac": "cmd+shift+r"
       }
     ],
     "configuration": {
-      "title": "Gaolaif",
+      "title": "Sireen",
       "properties": {
         "gaolaif.mode": {
           "type": "string",
@@ -169,7 +226,7 @@
         },
         "gaolaif.maxScenarios": {
           "type": "number",
-          "default": 1000
+          "default": 5
         }
       }
     }
@@ -179,20 +236,37 @@
     "compile": "webpack",
     "watch": "webpack --watch",
     "package": "webpack --mode production --devtool hidden-source-map",
-    "lint": "eslint src"
+    "lint": "eslint src",
+    "test": "jest"
   },
   "dependencies": {
     "@vscode/webview-ui-toolkit": "^1.4.0",
+    "lucide-react": "^1.27.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "ws": "^8.21.0"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@testing-library/jest-dom": "^7.0.0",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/jest": "^30.0.0",
     "@types/react": "^18.2.0",
     "@types/vscode": "^1.85.0",
     "@types/ws": "^8.18.1",
+    "@vscode/test-electron": "^3.0.0",
+    "css-loader": "^7.1.4",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "jest": "^29.7.0",
+    "jest-environment-jsdom": "^30.4.1",
+    "style-loader": "^4.0.0",
+    "ts-jest": "^29.1.0",
     "ts-loader": "^9.5.1",
     "typescript": "^5.3.0",
+    "typescript-eslint": "^8.65.0",
     "webpack": "^5.89.0",
     "webpack-cli": "^5.1.4"
   }

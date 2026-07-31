@@ -1,4 +1,5 @@
 import re
+import asyncio
 from typing import Optional
 
 from llm.router import Router
@@ -69,8 +70,8 @@ async def phase1_understand(
     if router is None or not router.is_configured():
         return local
 
-    resp = router.call(
-        "scanner",
+    resp = await asyncio.to_thread(
+        router.call, "scanner",
         SYSTEM_PROMPT,
         f"Filename: {file_name}\n\n```solidity\n{source_code[:8000]}\n```",
         temperature=0.1,

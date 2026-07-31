@@ -29,30 +29,13 @@ export async function handleAuditSelection(
           code: selection,
           file_path: filePath,
           language,
-          session_id: 'session-' + Date.now(),
         });
 
         if (result?.session_id) {
-          // Tell the sidebar to listen for results
+          // Notify webview — WS forwarding (Fix 1) will deliver sireen.audit.complete
           sidebarProvider.postMessageToWebview({
-            command: 'auditStarted',
-            sessionId: result.session_id,
-          });
-
-          // Listen for findings via WebSocket
-          backendClient.onMessage('audit_complete', (data: any) => {
-            sidebarProvider.postMessageToWebview({
-              command: 'auditComplete',
-              findings: data.findings,
-              patches: data.patches,
-            });
-
-            // Apply decorations to editor
-            if (data.findings?.length) {
-              const { VulnerabilityDecorator } = require('../decorations/vulnerabilityHighlight');
-              const decorator = new VulnerabilityDecorator();
-              decorator.applyFindings(editor, data.findings);
-            }
+            command: 'sireen.audit.started',
+            payload: { sessionId: result.session_id },
           });
         }
       } catch (err) {

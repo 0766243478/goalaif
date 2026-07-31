@@ -2,41 +2,80 @@ import * as vscode from 'vscode';
 import * as cp from 'child_process';
 import * as path from 'path';
 import WebSocket from 'ws';
+import { EventEmitter } from 'events';
 
-export class BackendClient {
+export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'failed';
+
+export interface BackendClientOptions {
+  maxReconnectAttempts?: number;
+  initialReconnectDelayMs?: number;
+  maxReconnectDelayMs?: number;
+  reconnectJitterPercent?: number;
+}
+
+const DEFAULT_OPTIONS: Required<BackendClientOptions> = {
+  maxReconnectAttempts: 10,
+  initialReconnectDelayMs: 1000,
+  maxReconnectDelayMs: 30000,
+  reconnectJitterPercent: 0.25,
+};
+
+/**
+ * BackendClient manages the connection to the Sireen backend server.
+ * Implements automatic WebSocket reconnection with exponential backoff and jitter.
+ */
+export class BackendClient extends EventEmitter {
   private ws: WebSocket | null = null;
   private backendProcess: cp.ChildProcess | null = null;
   private readonly port: number;
   private messageHandlers: Map<string, (data: any) => void> = new Map();
   private _connected: boolean = false;
+  private _connectionState: ConnectionState = 'disconnected';
+  private readonly options: Required<BackendClientOptions>;
+  private reconnectAttempt: number = 0;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private isShuttingDown: boolean = false;
 
-  constructor(private context: vscode.ExtensionContext) {
+  constructor(
+    private context: vscode.ExtensionContext,
+    options: BackendClientOptions = {}
+  ) {
+    super();
     this.port = vscode.workspace.getConfiguration('gaolaif').get('backendPort', 7432);
+    this.options = { ...DEFAULT_OPTIONS, ...options };
+    this.setMaxListeners(20); // Allow multiple listeners for connection state
   }
 
   get connected(): boolean { return this._connected; }
+  get connectionState(): ConnectionState { return this._connectionState; }
+
+  private setConnectionState(state: ConnectionState): void {
+    if (this._connectionState !== state) {
+      this._connectionState = state;
+      this.emit('connectionStateChange', state);
+    }
+  }
 
   async startBackend(): Promise<void> {
-    const backendPath = path.join(this.context.extensionPath, '..', 'backend');
-    const pythonPath = process.platform === 'win32' ? 'python' : 'python3';
+    try {
+      const resp = await fetch(`http://localhost:${this.port}/health`);
+      if (resp.ok) {
+        this._connected = true;
+        this.setConnectionState('connected');
+        await this.connectWebSocket();
+        return;
+      }
+    } catch { /* not running */ }
 
     try {
-      this.backendProcess = cp.spawn(pythonPath, [
-        '-m', 'uvicorn', 'main:app',
-        '--port', String(this.port),
-        '--host', '127.0.0.1',
-      ], { cwd: backendPath, stdio: ['ignore', 'pipe', 'pipe'] });
-
-      this.backendProcess.stderr?.on('data', (d: Buffer) => {
-        const line = d.toString();
-        if (line.includes('Uvicorn running on')) this._connected = true;
-      });
-
       await this.waitForBackend();
+      this._connected = true;
+      this.setConnectionState('connected');
       await this.connectWebSocket();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      vscode.window.showWarningMessage(`Gaolaif backend: ${msg}. Some features require the backend.`);
+      vscode.window.showWarningMessage(`Sireen backend: ${msg}. Some features require the backend.`);
+      this.setConnectionState('failed');
     }
   }
 
@@ -52,7 +91,17 @@ export class BackendClient {
   }
 
   private async connectWebSocket(): Promise<void> {
+    if (this.isShuttingDown) return;
+
+    this.setConnectionState('connecting');
     this.ws = new WebSocket(`ws://localhost:${this.port}/ws`);
+
+    this.ws.on('open', () => {
+      this._connected = true;
+      this.reconnectAttempt = 0;
+      this.setConnectionState('connected');
+    });
+
     this.ws.on('message', (data: Buffer) => {
       try {
         const msg = JSON.parse(data.toString());
@@ -60,12 +109,53 @@ export class BackendClient {
         if (handler) handler(msg.payload);
       } catch { /* ignore parse errors */ }
     });
-    this.ws.on('close', () => { this._connected = false; });
-    this.ws.on('error', () => { /* connection error handled by close */ });
+
+    this.ws.on('close', () => {
+      this._connected = false;
+      this.setConnectionState('disconnected');
+      this.scheduleReconnect();
+    });
+
+    this.ws.on('error', (err) => {
+      // Error is followed by 'close', but we log for diagnostics
+      console.error('[Sireen] WebSocket error:', err.message);
+    });
+  }
+
+  private scheduleReconnect(): void {
+    if (this.isShuttingDown) return;
+    if (this.reconnectAttempt >= this.options.maxReconnectAttempts) {
+      this.setConnectionState('failed');
+      vscode.window.showWarningMessage(
+        `Sireen: Backend connection lost after ${this.options.maxReconnectAttempts} reconnect attempts. ` +
+        'Restart the extension or check backend health.'
+      );
+      return;
+    }
+
+    this.reconnectAttempt++;
+    const baseDelay = Math.min(
+      this.options.initialReconnectDelayMs * Math.pow(2, this.reconnectAttempt - 1),
+      this.options.maxReconnectDelayMs
+    );
+    const jitter = baseDelay * this.options.reconnectJitterPercent * (Math.random() * 2 - 1);
+    const delay = Math.max(0, Math.round(baseDelay + jitter));
+
+    this.setConnectionState('reconnecting');
+
+    this.reconnectTimer = setTimeout(() => {
+      this.connectWebSocket();
+    }, delay);
   }
 
   onMessage(type: string, handler: (data: any) => void) {
     this.messageHandlers.set(type, handler);
+  }
+
+  sendWebSocket(message: object): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(message));
+    }
   }
 
   async post(endpoint: string, body: object): Promise<any> {
@@ -97,14 +187,26 @@ export class BackendClient {
   }
 
   stopBackend() {
+    this.isShuttingDown = true;
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
     if (this.backendProcess) {
       this.backendProcess.kill('SIGTERM');
       this.backendProcess = null;
     }
+
     if (this.ws) {
+      this.ws.removeAllListeners();
       this.ws.close();
       this.ws = null;
     }
+
     this._connected = false;
+    this.setConnectionState('disconnected');
+    this.removeAllListeners();
   }
 }

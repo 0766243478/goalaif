@@ -1,4 +1,5 @@
 import React, { useRef, useEffect } from 'react';
+import { Icon } from './Icon';
 
 interface Props {
   entries: string[];
@@ -14,7 +15,8 @@ export function AgentLog({ entries, color = '#0EA5E9' }: Props) {
 
   return (
     <div style={{ marginBottom: 12 }}>
-      <div style={{ fontSize: 10, color: '#64748B', fontWeight: 700, marginBottom: 4, letterSpacing: '0.1em' }}>
+      <div style={{ fontSize: 10, color: '#64748B', fontWeight: 700, marginBottom: 4, letterSpacing: '0.1em', display: 'flex', alignItems: 'center', gap: 4 }}>
+        <Icon name="terminal" size={10} />
         [{color === '#EF4444' ? 'EXPLOIT' : 'AGENT'} LOG]
       </div>
       <div
@@ -26,12 +28,16 @@ export function AgentLog({ entries, color = '#0EA5E9' }: Props) {
         }}
       >
         {entries.map((entry, i) => (
-          <div key={i} style={{ color: i === entries.length - 1 ? color : '#475569' }}>
-            {'>'} {entry}
+          <div key={i} style={{ color: i === entries.length - 1 ? color : '#475569', display: 'flex', alignItems: 'center', gap: 4 }}>
+            <Icon name="chevronRight" size={10} />
+            {entry}
           </div>
         ))}
         {entries.length === 0 && (
-          <div style={{ color: '#1E293B' }}>{'> idle'}</div>
+          <div style={{ color: '#1E293B', display: 'flex', alignItems: 'center', gap: 4 }}>
+            <Icon name="chevronRight" size={10} />
+            idle
+          </div>
         )}
       </div>
     </div>

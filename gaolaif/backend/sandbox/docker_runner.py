@@ -49,6 +49,17 @@ class DockerRunner:
 
         import subprocess
         try:
+            # Check whether the image exists locally first
+            inspect = subprocess.run(
+                ["docker", "image", "inspect", image],
+                capture_output=True, text=True, timeout=10,
+            )
+            if inspect.returncode != 0:
+                return ContainerInfo(
+                    error=f"Docker image '{image}' not found locally. "
+                          f"Run 'docker pull {image}' or build the sandbox image first."
+                )
+
             result = subprocess.run(
                 ["docker", "run", "--rm", "-d",
                  "--name", name,

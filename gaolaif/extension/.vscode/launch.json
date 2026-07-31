@@ -1,0 +1,56 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run Extension",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/dist/**/*.js"
+      ],
+      "preLaunchTask": "npm: compile"
+    },
+    {
+      "name": "Run Webview",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:8080",
+      "webRoot": "${workspaceFolder}/dist",
+      "preLaunchTask": "npm: watch"
+    },
+    {
+      "name": "Run Backend (Python)",
+      "type": "python",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": [
+        "main:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "7432",
+        "--reload"
+      ],
+      "cwd": "${workspaceFolder}/../backend",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/../backend"
+      },
+      "console": "integratedTerminal",
+      "justMyCode": true
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Extension + Webview",
+      "configurations": ["Run Extension"]
+    },
+    {
+      "name": "Full Stack (Backend + Extension)",
+      "configurations": ["Run Backend (Python)", "Run Extension"],
+      "preLaunchTask": "npm: compile"
+    }
+  ]
+}

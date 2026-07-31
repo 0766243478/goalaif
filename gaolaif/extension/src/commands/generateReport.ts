@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { BackendClient } from '../api/backendClient';
+import { compareSessionsByCreatedAtDesc, type SessionSummary } from './sessionSort';
 
 export async function handleGenerateReport(backendClient: BackendClient) {
   const protocolName = await vscode.window.showInputBox({
@@ -14,8 +15,19 @@ export async function handleGenerateReport(backendClient: BackendClient) {
     { location: vscode.ProgressLocation.Notification, title: 'Gaolaif: Generating report...' },
     async () => {
       try {
+        // Find the most recent completed session
+        const sessionsResult = await backendClient.get('/sessions');
+        const completedSession = (sessionsResult?.sessions || [])
+          .filter((s: SessionSummary) => s.status === 'complete' && (s.findings_count ?? 0) > 0)
+          .sort(compareSessionsByCreatedAtDesc)[0];
+
+        if (!completedSession) {
+          vscode.window.showErrorMessage('No completed audit session found. Run an audit first.');
+          return;
+        }
+
         const result = await backendClient.post('/report/generate', {
-          session_id: 'session-' + Date.now(),
+          session_id: completedSession.id,
           protocol_name: protocolName,
         });
 

@@ -6,6 +6,8 @@ Fixes:
        timeout does not block FastAPI startup.
   H-11 _search_fallback now uses pure substring matching (the hash-based
        branch was unreliable and has been removed).
+  V-1  Real sentence-transformers embeddings when available; hash-based
+       pseudo-embedding fallback when not.
 """
 
 import hashlib
@@ -29,20 +31,40 @@ class SmartMemory:
         self._collection_name = "sireen_memory"
         self._fallback_store: dict[str, MemoryEntry] = {}
         self._use_qdrant = False
+        self._embedder = None
+        self._embed_dim = 384
         # NOTE: init() is NOT called here — it is called from the FastAPI
         # startup event via asyncio.to_thread(memory.init) so the 2-second
         # Qdrant timeout does not block uvicorn startup.
 
     def init(self):
         """P-3 fix: called in background, not in __init__."""
+        import os
+        self._init_embedder()
         try:
             from qdrant_client import QdrantClient
-            self._qdrant_client = QdrantClient("localhost", port=6333, timeout=2.0)
+            host = os.environ.get("QDRANT_HOST", "localhost")
+            port = int(os.environ.get("QDRANT_PORT", "6333"))
+            api_key = os.environ.get("QDRANT_API_KEY", "")
+            if api_key:
+                self._qdrant_client = QdrantClient(url=f"https://{host}:{port}", api_key=api_key, timeout=2.0)
+            else:
+                self._qdrant_client = QdrantClient(host, port=port, timeout=2.0)
             self._qdrant_client.get_collections()
             self._ensure_collection()
             self._use_qdrant = True
         except Exception:
             self._use_qdrant = False
+
+    def _init_embedder(self):
+        """V-1 fix: try sentence-transformers, fall back to hash-based."""
+        try:
+            from sentence_transformers import SentenceTransformer
+            model_name = "all-MiniLM-L6-v2"
+            self._embedder = SentenceTransformer(model_name)
+            self._embed_dim = self._embedder.get_sentence_embedding_dimension()
+        except ImportError:
+            self._embedder = None
 
     def _ensure_collection(self):
         from qdrant_client.http.models import VectorParams, Distance
@@ -50,11 +72,18 @@ class SmartMemory:
         if self._collection_name not in cols:
             self._qdrant_client.create_collection(
                 collection_name=self._collection_name,
-                vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+                vectors_config=VectorParams(size=self._embed_dim, distance=Distance.COSINE),
             )
 
     def _compute_hash(self, content: str) -> str:
         return hashlib.sha256(content.encode()).hexdigest()[:16]
+
+    def _compute_vector(self, text: str) -> list[float]:
+        if self._embedder is not None:
+            return self._embedder.encode(text).tolist()
+        h = self._compute_hash(text)
+        pseudo_vec = [float(int(h[i:i+2], 16)) / 255.0 for i in range(0, min(32, len(h)), 2)]
+        return (pseudo_vec * 192)[:self._embed_dim]
 
     def save(self, key: str, content: str, metadata: Optional[dict] = None):
         if not key or not content:
@@ -74,11 +103,12 @@ class SmartMemory:
         try:
             from qdrant_client.http.models import PointStruct
             point_id = abs(hash(entry.key)) % (2 ** 63)
+            vec = self._compute_vector(entry.content)
             self._qdrant_client.upsert(
                 collection_name=self._collection_name,
                 points=[PointStruct(
                     id=point_id,
-                    vector=[0.0] * 384,
+                    vector=vec,
                     payload={
                         "key": entry.key,
                         "content": entry.content,
@@ -88,7 +118,6 @@ class SmartMemory:
                 )],
             )
         except Exception:
-            # Fall back to dict on Qdrant write failure
             self._fallback_store[entry.key] = entry
 
     def search(self, query: str, top_k: int = 5) -> list[MemoryEntry]:
@@ -98,9 +127,10 @@ class SmartMemory:
 
     def _search_qdrant(self, query: str, top_k: int) -> list[MemoryEntry]:
         try:
+            qvec = self._compute_vector(query)
             results = self._qdrant_client.search(
                 collection_name=self._collection_name,
-                query_vector=[0.0] * 384,
+                query_vector=qvec,
                 limit=top_k,
             )
             entries = []

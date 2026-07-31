@@ -1,10 +1,11 @@
 import React from 'react';
+import { Icon } from './Icon';
 import type { Finding, Patch } from '../types';
 
 interface Props {
   findings: Finding[];
   mode: 'protocol' | 'hacker';
-  patches?: Patch[];
+  patches?: Record<string, Patch>;
 }
 
 const SEV_COLORS: Record<string, string> = {
@@ -19,8 +20,9 @@ export function FindingsList({ findings, mode, patches }: Props) {
     <div style={{ marginBottom: 12 }}>
       <div style={{
         fontSize: 10, color: '#64748B', fontWeight: 700, marginBottom: 6,
-        letterSpacing: '0.1em',
+        letterSpacing: '0.1em', display: 'flex', alignItems: 'center', gap: 4,
       }}>
+        <Icon name="findings" size={10} />
         {mode === 'protocol' ? 'FINDINGS' : 'VULNERABILITIES'} ({findings.length})
       </div>
       {findings.map((f, i) => (
@@ -52,10 +54,10 @@ export function FindingsList({ findings, mode, patches }: Props) {
               </div>
             )}
           </div>
-          {patches?.[i] && (
-            <div style={{ padding: '4px 8px 6px', borderTop: '1px solid #1E293B', fontSize: 10 }}>
-              <span style={{ color: '#22C55E' }}>Fix:</span>{' '}
-              <span style={{ color: '#64748B' }}>{patches[i].strategy}</span>
+          {f.id && patches?.[f.id] && (
+            <div style={{ padding: '4px 8px 6px', borderTop: '1px solid #1E293B', fontSize: 10, display: 'flex', alignItems: 'center', gap: 4 }}>
+              <Icon name="check" size={10} color="#22C55E" />
+              <span style={{ color: '#64748B' }}>{patches[f.id].strategy}</span>
             </div>
           )}
         </div>

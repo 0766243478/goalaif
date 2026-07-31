@@ -1,0 +1,43 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "type": "npm",
+      "script": "compile",
+      "problemMatcher": "$ts-webpack-watch",
+      "isBackground": true,
+      "label": "npm: compile",
+      "presentation": {
+        "reveal": "never"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "type": "npm",
+      "script": "watch",
+      "problemMatcher": "$ts-webpack-watch",
+      "isBackground": true,
+      "label": "npm: watch",
+      "presentation": {
+        "reveal": "never"
+      }
+    },
+    {
+      "label": "start-backend",
+      "type": "shell",
+      "command": "uvicorn main:app --host 127.0.0.1 --port 7432 --reload",
+      "options": {
+        "cwd": "${workspaceFolder}/../backend"
+      },
+      "problemMatcher": [],
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      }
+    }
+  ]
+}

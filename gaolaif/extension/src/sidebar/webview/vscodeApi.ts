@@ -1,7 +1,14 @@
+export interface WebviewMessage {
+  command: string;
+  payload?: Record<string, unknown>;
+  session_id?: string;
+  [key: string]: unknown;
+}
+
 interface VsCodeApi {
-  postMessage(message: any): void;
-  getState(): any;
-  setState(state: any): void;
+  postMessage(message: WebviewMessage): void;
+  getState<T = unknown>(): T | undefined;
+  setState(state: unknown): void;
 }
 
 declare function acquireVsCodeApi(): VsCodeApi;

@@ -1,0 +1,22 @@
+# Secrets - never bake into the image
+.env
+.env.*
+!.env.example
+
+# Python caches and build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+*.log
+
+# Dev / test scripts and tests
+tests/
+_manual_*.py
+_final_e2e.py
+_regress_*.py
+*.patched
+
+# VCS
+.git
+.gitignore

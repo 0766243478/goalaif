@@ -1,71 +1,106 @@
-import { useState, useEffect, useCallback } from 'react';
-import { ProtocolMode } from './ProtocolMode';
-import { HackerMode } from './HackerMode';
-import { vscode } from './vscodeApi';
-import type { Mode, Finding, Patch, MemoryEntry, PoCResult, MoneyFlowData, TacticEntry } from './types';
+import { useState, useEffect } from 'react';
+import { StoreProvider } from './store';
+import { CopilotLayout } from './layouts/CopilotLayout';
+import { useMessageBus } from './hooks/useMessageBus';
+import { useStore } from './store';
+import { Icon } from './components/Icon';
+import './styles.css';
 
-export default function App() {
-  const [mode, setMode] = useState<Mode>('protocol');
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [sandboxReady, setSandboxReady] = useState(false);
-
-  const switchMode = useCallback((newMode: Mode) => {
-    setMode(newMode);
-    vscode.postMessage({ command: 'switchMode', mode: newMode });
-  }, []);
+function AppContent() {
+  const { state, dispatch } = useStore();
+  const { send } = useMessageBus();
 
   useEffect(() => {
-    const handler = (event: MessageEvent) => {
-      const msg = event.data;
-      if (!msg?.command) return;
-      switch (msg.command) {
-        case 'sandboxStatus':
-          setSandboxReady(msg.ready);
-          break;
-        case 'auditStarted':
-          setSessionId(msg.sessionId);
-          break;
-      }
-    };
-    window.addEventListener('message', handler);
-    return () => window.removeEventListener('message', handler);
-  }, []);
+    send('sireen.apiKey.status', {});
+  }, [send]);
+
+  if (state.apiKeySet === false) {
+    return <ApiKeySetup onDone={() => dispatch({ type: 'SET_API_KEY', set: true })} />;
+  }
+
+  return <CopilotLayout />;
+}
+
+function ApiKeySetup({ onDone }: { onDone: () => void }) {
+  const [key, setKey] = useState('');
+  const [msg, setMsg] = useState('');
+  const [sending, setSending] = useState(false);
+  const { state } = useStore();
+  const { send } = useMessageBus();
+
+  useEffect(() => {
+    if (!sending && state.apiKeySet === true && msg === 'Saving...') {
+      onDone();
+    }
+  }, [state.apiKeySet, sending, msg, onDone]);
+
+  const submit = () => {
+    if (key.length < 20) {
+      setMsg('Key appears invalid (too short). Get one at openrouter.ai');
+      return;
+    }
+    setSending(true);
+    setMsg('Saving...');
+    send('sireen.settings.setApiKey', { key });
+  };
 
   return (
-    <div style={{ background: '#07090F', minHeight: '100vh', color: '#E2E8F0', fontFamily: 'JetBrains Mono, monospace' }}>
-      <div style={{ padding: '12px 16px', borderBottom: '1px solid #1E293B' }}>
-        <div style={{ fontSize: 16, fontWeight: 700, color: '#F59E0B', marginBottom: 8 }}>
-          GAOLAIF
-        </div>
-        <div style={{ display: 'flex', gap: 4, background: '#0F1623', borderRadius: 6, padding: 3 }}>
-          {(['protocol', 'hacker'] as Mode[]).map(m => (
-            <button
-              key={m}
-              onClick={() => switchMode(m)}
-              style={{
-                flex: 1, padding: '6px 0', border: 'none', borderRadius: 4,
-                cursor: 'pointer', fontSize: 11, fontWeight: 700,
-                fontFamily: 'inherit', letterSpacing: '0.05em',
-                background: mode === m
-                  ? (m === 'protocol' ? '#0EA5E9' : '#EF4444')
-                  : 'transparent',
-                color: mode === m ? '#000' : '#475569',
-                transition: 'all 0.2s',
-              }}
-            >
-              {m === 'protocol' ? '\u{1F6E1} PROTOCOL' : '\u{2694} HACKER'}
-            </button>
-          ))}
-        </div>
-        <div style={{ fontSize: 10, color: '#334155', marginTop: 6, textAlign: 'center' }}>
-          {sandboxReady ? '\u25CF Sandbox ready' : '\u25CB Sandbox offline'}
-        </div>
+    <div style={{
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      height: '100vh', padding: 24, background: 'var(--sireen-abyss)',
+    }}>
+      <div style={{
+        width: 48, height: 48, borderRadius: 'var(--radius-xl)',
+        background: 'var(--sireen-amber-bg)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        marginBottom: 16,
+      }}>
+        <Icon name="brand" size={24} color="var(--sireen-amber)" />
       </div>
-
-      {mode === 'protocol'
-        ? <ProtocolMode sessionId={sessionId} setSessionId={setSessionId} />
-        : <HackerMode   sessionId={sessionId} setSessionId={setSessionId} />
-      }
+      <div style={{ fontSize: 'var(--text-xl)', fontWeight: 700, color: 'var(--sireen-amber)', marginBottom: 8 }}>
+        SIREEN SETUP
+      </div>
+      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--sireen-text-secondary)', marginBottom: 16, textAlign: 'center', maxWidth: 300 }}>
+        Enter your OpenRouter API key to enable AI-powered auditing.
+        Free models available at openrouter.ai.
+      </div>
+      <input
+        type="password"
+        value={key}
+        onChange={(e) => setKey(e.target.value)}
+        onKeyDown={(e) => e.key === 'Enter' && submit()}
+        placeholder="sk-or-v1-..."
+        className="input"
+        style={{ maxWidth: 320, marginBottom: 8 }}
+        disabled={sending}
+      />
+      <button
+        className="btn-primary"
+        onClick={submit}
+        style={{ maxWidth: 320, width: '100%' }}
+        disabled={sending}
+      >
+        {sending ? 'SAVING...' : 'SAVE KEY'}
+      </button>
+      {msg && (
+        <div style={{ fontSize: 'var(--text-xs)', marginTop: 8,
+          color: msg.startsWith('Key') ? 'var(--sireen-critical)' :
+                 msg === 'Saving...' ? 'var(--sireen-amber)' : 'var(--sireen-text-muted)',
+        }}>
+          {msg}
+        </div>
+      )}
+      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--sireen-text-ghost)', marginTop: 16 }}>
+        You can skip this and set it later via Settings.
+      </div>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <StoreProvider>
+      <AppContent />
+    </StoreProvider>
   );
 }

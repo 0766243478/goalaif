@@ -15,7 +15,7 @@ interface Props {
 export function ProtocolMode({ sessionId, setSessionId }: Props) {
   const [status, setStatus] = useState<PipelineStage>('idle');
   const [findings, setFindings] = useState<Finding[]>([]);
-  const [patches, setPatches] = useState<Patch[]>([]);
+  const [patches, setPatches] = useState<Record<string, Patch>>({});
   const [agentLog, setAgentLog] = useState<string[]>([]);
   const [memory, setMemory] = useState<MemoryEntry[]>([]);
 
@@ -24,11 +24,18 @@ export function ProtocolMode({ sessionId, setSessionId }: Props) {
       const msg = event.data;
       if (!msg?.command) return;
       switch (msg.command) {
-        case 'auditComplete':
+        case 'auditComplete': {
+          const fs: Finding[] = msg.findings || [];
+          const ps: Patch[] = msg.patches || [];
           setStatus('done');
-          setFindings(msg.findings || []);
-          setPatches(msg.patches || []);
+          setFindings(fs);
+          const byId: Record<string, Patch> = {};
+          fs.forEach((f, idx) => {
+            if (f.id && ps[idx]) byId[f.id] = ps[idx];
+          });
+          setPatches(byId);
           break;
+        }
         case 'auditProgress':
           setStatus(msg.stage);
           setAgentLog(prev => [...prev, msg.message]);

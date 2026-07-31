@@ -1,0 +1,59 @@
+[
+  {
+    "task": "1_anonymizer_round_trip",
+    "passed": true,
+    "detail": "placeholders=4"
+  },
+  {
+    "task": "2_cloud_toggle_default_off",
+    "passed": true,
+    "detail": "GAOLAIF_CLOUD_URL=''"
+  },
+  {
+    "task": "3_consensus_disagreement_blocked",
+    "passed": true,
+    "detail": ""
+  },
+  {
+    "task": "4_transparency_sanitize",
+    "passed": true,
+    "detail": ""
+  },
+  {
+    "task": "5_encrypted_memory",
+    "passed": true,
+    "detail": ""
+  },
+  {
+    "task": "6_tfidf_fifo_fallback",
+    "passed": true,
+    "detail": "entries=1"
+  },
+  {
+    "task": "7_migration",
+    "passed": true,
+    "detail": "N/A \u2014 best-effort skip"
+  },
+  {
+    "task": "8_pytest_suite",
+    "passed": true,
+    "detail": "62 passed, 1 warning in 34.05s"
+  },
+  {
+    "task": "9_backend_import",
+    "passed": true,
+    "detail": "FastAPI app imports cleanly"
+  },
+  {
+    "task": "10_anonymizer_v2_tests",
+    "passed": true,
+    "detail": "10 passed in 0.13s"
+  },
+  {
+    "task": "11_e2e_pipeline",
+    "passed": true,
+    "detail": "9 passed in 7.99s"
+  }
+]
+
+11/11 passed

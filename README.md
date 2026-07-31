@@ -1,16 +1,18 @@
-# GoalAIF / Gaolaif
+# Sireen
 
-AI-native smart contract security workspace for Web3 auditors and bug bounty hunters. Gaolaif combines a VS Code extension, a FastAPI audit backend, and optional agent-core services to run a four-phase pipeline: understand → attack scenarios → forge simulation → judge and report.
+AI-native smart contract security workspace for Web3 auditors and bug bounty hunters. Sireen combines a VS Code extension, a FastAPI audit backend, and optional agent-core services to run a four-phase pipeline: understand -> attack scenarios -> forge simulation -> judge and report.
 
 ## Features
 
-- **4-phase audit pipeline** — protocol mapping, attack scenario generation, Foundry simulation, and finding validation
-- **VS Code extension** — sidebar workspace with Protocol and Hacker modes, inline audit/exploit commands, and live WebSocket progress
-- **Privacy firewall** — Anonymizer v2 strips identifiers before any external LLM call; inbound validation on findings
-- **Forge integration** — local PoC generation and reentrancy simulation via Foundry
-- **Smart memory** — Qdrant-backed abstract pattern storage (zero-knowledge: no raw code stored)
-- **Sandbox** — Docker-based EVM/Move environments, invariant and fuzz endpoints
-- **Subscription layer** — Supabase-backed tier limits for commercial deployment
+- **4-phase audit pipeline** -- protocol mapping, attack scenario generation, Foundry simulation, and finding validation
+- **VS Code extension** -- sidebar workspace with Protocol and Hacker modes, inline audit/exploit commands, and live WebSocket progress
+- **Privacy firewall** -- Anonymizer v2 strips identifiers before any external LLM call; inbound validation on findings
+- **Forge integration** -- local PoC generation and reentrancy simulation via Foundry
+- **Smart memory** -- Qdrant-backed abstract pattern storage (zero-knowledge: no raw code stored)
+- **Sandbox** -- Docker-based EVM/Move environments, invariant and fuzz endpoints
+- **Patch Engine** -- LLM-powered remediation patch generation for confirmed findings
+- **Report Export** -- Markdown and JSON report formats for bug bounty submissions
+- **Subscription layer** -- Supabase-backed tier limits with NOWPayments integration
 
 ## Repository layout
 
@@ -93,19 +95,29 @@ Starts Qdrant on port 6333 and agent-core on port 8000.
 | `/sandbox/fuzz` | POST | Run Forge fuzz tests |
 | `/sandbox/start` | POST | Start Docker sandbox |
 | `/memory/search` | POST | Query smart memory |
+| `/memory/save` | POST | Save abstract pattern to memory |
 | `/report/generate` | POST | Generate markdown report |
+| `/report/export` | POST | Export report (markdown/json) |
+| `/patch/generate` | POST | Generate remediation patch |
+| `/subscription/status` | GET | Check subscription tier/quota |
+| `/subscription/upgrade` | POST | Create NOWPayments invoice |
+| `/payment/webhook` | POST | NOWPayments IPN webhook |
 | `/config/set-key` | POST | Set OpenRouter API key |
 | `/ws` | WebSocket | Real-time audit progress |
 
 ## Running tests
 
 ```bash
-# Backend unit + E2E tests
+# Backend unit + E2E tests (60+ tests)
 cd gaolaif/backend
 pytest tests/ firewall/tests/ -v
 
-# Gate harness (anonymizer + pytest suite)
-python dynamic_gate_runner.py
+# Runtime verification suite (15 component checks)
+python runtime_verification/verify_all.py
+
+# Extension tests (jest)
+cd gaolaif/extension
+npx jest
 
 # Extension build check
 cd gaolaif/extension && npm run compile
