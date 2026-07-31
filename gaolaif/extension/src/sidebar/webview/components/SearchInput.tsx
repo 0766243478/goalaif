@@ -23,6 +23,7 @@ export function SearchInput({ placeholder = 'Search...', onSearch }: Props) {
         value={value}
         onChange={handleChange}
         placeholder={placeholder}
+        aria-label={placeholder}
         className="input"
         style={{
           paddingLeft: 28,

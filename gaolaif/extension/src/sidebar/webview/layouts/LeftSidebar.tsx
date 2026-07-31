@@ -85,7 +85,7 @@ export function LeftSidebar() {
                 position: 'absolute',
                 top: 2,
                 right: 2,
-                background: 'var(--sireen-critical)',
+                background: 'var(--sireen-critical-strong)',
                 color: '#fff',
                 fontSize: 7,
                 fontWeight: 700,

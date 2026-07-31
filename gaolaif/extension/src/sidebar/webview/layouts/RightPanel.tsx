@@ -12,8 +12,8 @@ export function RightPanel() {
 
   return (
     <div style={{
-      width: 360,
-      minWidth: 360,
+      flex: '0 0 clamp(240px, 30vw, 360px)',
+      minWidth: 0,
       background: 'var(--sireen-deep)',
       borderLeft: '1px solid var(--sireen-border)',
       display: 'flex',

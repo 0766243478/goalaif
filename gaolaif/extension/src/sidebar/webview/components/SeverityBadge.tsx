@@ -4,10 +4,10 @@ interface Props {
 }
 
 const config = {
-  CRITICAL: { bg: 'var(--sireen-critical)', color: '#fff', label: 'CRITICAL' },
+  CRITICAL: { bg: 'var(--sireen-critical-strong)', color: '#fff', label: 'CRITICAL' },
   HIGH: { bg: 'var(--sireen-high)', color: '#000', label: 'HIGH' },
   MEDIUM: { bg: 'var(--sireen-medium)', color: '#000', label: 'MEDIUM' },
-  LOW: { bg: 'var(--sireen-low)', color: '#fff', label: 'LOW' },
+  LOW: { bg: 'var(--sireen-low-strong)', color: '#fff', label: 'LOW' },
 };
 
 export function SeverityBadge({ severity, size = 'md' }: Props) {

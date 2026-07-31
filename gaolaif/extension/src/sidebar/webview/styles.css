@@ -8,15 +8,17 @@
   --sireen-border-focus: #2A3550;
   --sireen-text-primary: #E2E8F0;
   --sireen-text-secondary: #94A3B8;
-  --sireen-text-muted: #64748B;
-  --sireen-text-ghost: #334155;
+  --sireen-text-muted: #7E8DA6;
+  --sireen-text-ghost: #75849D;
   --sireen-critical: #EF4444;
+  --sireen-critical-strong: #DC2626;
   --sireen-critical-bg: rgba(239,68,68,0.08);
   --sireen-high: #F97316;
   --sireen-high-bg: rgba(249,115,22,0.06);
   --sireen-medium: #EAB308;
   --sireen-medium-bg: rgba(234,179,8,0.05);
   --sireen-low: #3B82F6;
+  --sireen-low-strong: #2563EB;
   --sireen-low-bg: rgba(59,130,246,0.04);
   --sireen-info: #0EA5E9;
   --sireen-info-bg: rgba(14,165,233,0.06);
@@ -174,6 +176,7 @@ body {
 .card:hover { border-color: var(--sireen-border-focus); }
 .card-clickable { cursor: pointer; }
 .card-clickable:hover { background: var(--sireen-raised); }
+.btn-primary:focus-visible, .btn-secondary:focus-visible, .btn-ghost:focus-visible, .btn-danger:focus-visible, .card-clickable:focus-visible, .tab:focus-visible { outline: 2px solid var(--sireen-info); outline-offset: 2px; }
 
 .card-header {
   padding: var(--space-2) var(--space-3);
@@ -194,10 +197,10 @@ body {
   border-radius: 2px;
   line-height: 1.4;
 }
-.badge-critical { background: var(--sireen-critical); color: #fff; }
+.badge-critical { background: #DC2626; color: #fff; }
 .badge-high { background: var(--sireen-high); color: #000; }
 .badge-medium { background: var(--sireen-medium); color: #000; }
-.badge-low { background: var(--sireen-low); color: #fff; }
+.badge-low { background: #2563EB; color: #fff; }
 .badge-info { background: var(--sireen-info); color: #000; }
 .badge-success { background: var(--sireen-green); color: #000; }
 .badge-ghost {

@@ -153,6 +153,7 @@ export function ChatInput({ context, onSubmit, onSlashCommand }: Props) {
           onChange={handleChange}
           onKeyDown={handleKeyDown}
           placeholder="Ask Sireen anything... (Shift+Enter for new line)"
+          aria-label="Chat message"
           rows={1}
           style={{
             width: '100%',

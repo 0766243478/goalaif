@@ -42,7 +42,7 @@ const extensionConfig = {
 const webviewConfig = {
   name: 'webview',
   target: 'web',
-  entry: './src/sidebar/webview/App.tsx',
+  entry: './src/sidebar/webview/main.tsx',
   output: {
     path: path.resolve(__dirname, 'dist'),
     filename: 'webview.js',

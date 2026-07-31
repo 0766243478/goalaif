@@ -1,4 +1,4 @@
-import { Component, memo, Suspense, lazy, type ReactNode } from 'react';
+import { Component, memo, Suspense, lazy, useEffect, type ReactNode } from 'react';
 import { useStore } from '../store';
 import { LeftSidebar } from './LeftSidebar';
 import { RightPanel } from './RightPanel';
@@ -66,8 +66,16 @@ const ViewLoader = () => (
 );
 
 const CopilotLayout = memo(function CopilotLayout() {
-  const { state } = useStore();
+  const { state, dispatch } = useStore();
   const ViewComponent = viewComponents[state.activeView] || OverviewView;
+
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 560px)');
+    const apply = () => dispatch({ type: 'SET_RIGHT_PANEL', open: !mq.matches });
+    apply();
+    mq.addEventListener('change', apply);
+    return () => mq.removeEventListener('change', apply);
+  }, [dispatch]);
 
   return (
     <div style={{ display: 'flex', height: '100vh', width: '100vw', background: 'var(--sireen-abyss)', overflow: 'hidden' }}>
