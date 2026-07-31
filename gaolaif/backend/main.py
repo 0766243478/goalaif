@@ -330,7 +330,7 @@ contract FuzzTest is Test {{
     function setUp() public {{ target = new {contract_name}(); }}
     function testFuzz_memory_safety(uint256 a, uint256 b) public {{
         vm.assume(a > 0 && b > 0 && a < type(uint128).max && b < type(uint128).max);
-        assertGe(a + b, a, "basic arithmetic invariant");
+        assertGe(a + b, a);
     }}
     function testFuzz_revert_on_zero() public {{
         vm.deal(address(this), 0);

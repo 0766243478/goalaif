@@ -61,6 +61,49 @@ SAFE = (
 )
 
 
+PARAMETERIZED_VULNERABLE = (
+    "// SPDX-License-Identifier: MIT\n"
+    "pragma solidity ^0.8.0;\n\n"
+    "contract ParameterizedVault {\n"
+    "    mapping(address => uint256) public balances;\n\n"
+    "    function deposit() external payable {\n"
+    "        require(msg.value > 0, \"no value\");\n"
+    "        balances[msg.sender] += msg.value;\n"
+    "    }\n\n"
+    "    function withdraw(uint256 amount) external {\n"
+    "        require(balances[msg.sender] >= amount, \"insufficient balance\");\n"
+    "        (bool ok, ) = msg.sender.call{value: amount}(\"\");\n"
+    "        require(ok, \"transfer failed\");\n"
+    "        balances[msg.sender] = 0;\n"
+    "    }\n\n"
+    "    function balanceOf(address who) external view returns (uint256) {\n"
+    "        return balances[who];\n"
+    "    }\n"
+    "}\n"
+)
+
+
+DECREMENT_VULNERABLE = (
+    "// SPDX-License-Identifier: MIT\n"
+    "pragma solidity ^0.8.0;\n\n"
+    "contract DecrementVault {\n"
+    "    mapping(address => uint256) public balances;\n\n"
+    "    function deposit() external payable {\n"
+    "        balances[msg.sender] += msg.value;\n"
+    "    }\n\n"
+    "    function withdraw(uint256 amount) external {\n"
+    "        require(balances[msg.sender] >= amount, \"insufficient balance\");\n"
+    "        (bool ok, ) = msg.sender.call{value: amount}(\"\");\n"
+    "        require(ok, \"transfer failed\");\n"
+    "        balances[msg.sender] -= amount;\n"
+    "    }\n\n"
+    "    function balanceOf(address who) external view returns (uint256) {\n"
+    "        return balances[who];\n"
+    "    }\n"
+    "}\n"
+)
+
+
 async def test_reentrancy_confirmed() -> None:
     """CEI-violating vault must be confirmed exploitable by real forge."""
     scenario = AttackScenario(
@@ -150,6 +193,42 @@ async def test_full_pipeline_completes() -> None:
     assert session.findings, "pipeline must produce findings for a vulnerable contract"
     assert any(f.confirmed for f in session.findings), "at least one finding must be forge-confirmed"
 
+async def test_signature_adaptive_poc() -> None:
+    """withdraw(uint256) + payable deposit must still be confirmed (regression for the no-arg PoC bug)."""
+    scenario = AttackScenario(
+        name="Reentrancy on withdraw",
+        description="Parameterized withdraw re-entered before balance update",
+        entry_point="withdraw",
+        attack_vector="reentrancy",
+        estimated_impact="Full drain of contract ETH",
+    )
+    proof = SimulationProof(attack_vector="reentrancy", target_function="withdraw")
+    proof = await _run_forge_test(PARAMETERIZED_VULNERABLE, scenario, proof)
+    print(f"SIGNATURE_ADAPTIVE confirmed={proof.confirmed}")
+    assert proof.confirmed is True, "parameterized withdraw(uint256) MUST be confirmed by real forge"
+
+
+async def test_decrement_vault_honest_signal() -> None:
+    """`-=` accounting self-reverts on unwind (checked 0.8 math): the drain happens but the
+    tx reverts, so it must be needs_review=True, never a false confirmed (and never a skip)."""
+    scenario = AttackScenario(
+        name="Reentrancy on withdraw",
+        description="Decrement-accounting withdraw re-entered before state update",
+        entry_point="withdraw",
+        attack_vector="reentrancy",
+        estimated_impact="Full drain of contract ETH",
+    )
+    proof = SimulationProof(attack_vector="reentrancy", target_function="withdraw")
+    proof = await _run_forge_test(DECREMENT_VULNERABLE, scenario, proof)
+    er = proof.exploit_result
+    print(f"DECREMENT confirmed={proof.confirmed} needs_review={er.needs_review if er else None}")
+    assert proof.confirmed is False, "self-reverting decrement vault MUST NOT be confirmed"
+    assert er is not None and er.needs_review is True, "must be flagged for human review"
+    assert er.compiled is True, "PoC must have compiled (regression: no-arg call bug)"
+    assert er.forge_tests and er.forge_tests[0].passed is False, "forge must have run the test"
+
+
+
 async def main() -> None:
     forge = _find_forge()
     assert forge is not None, "forge not found on PATH"
@@ -164,6 +243,10 @@ async def main() -> None:
     await test_real_exploit_detection()
     print("\n=== TEST 5: Full pipeline (audit -> forge -> findings) ===")
     await test_full_pipeline_completes()
+    print("\n=== TEST 6: Signature-adaptive PoC (withdraw(uint256)) ===")
+    await test_signature_adaptive_poc()
+    print("\n=== TEST 7: Decrement-vault honest signal (needs_review) ===")
+    await test_decrement_vault_honest_signal()
     print("\n=== ALL TESTS PASSED ===")
 
 
