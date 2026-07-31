@@ -165,7 +165,11 @@ async def _start_audit(body: dict):
     file_name = os.path.basename(file_path) if file_path else "contract.sol"
     language = body.get("language", "solidity")
     rpc_url = body.get("rpc_url", "")
-    max_scenarios = min(int(body.get("max_scenarios", 3)), 10)
+    try:
+        max_scenarios = int(body.get("max_scenarios", 3))
+        max_scenarios = max(1, min(max_scenarios, 10))
+    except (TypeError, ValueError):
+        max_scenarios = 3
     rules: list[str] = body.get("rules", [])
     anonymize: bool = body.get("anonymize", True)
     conn_id: str = body.get("_conn_id", "")      # injected by WS handler
@@ -452,13 +456,43 @@ async def _run_pipeline(
         session.status = "phase2"
         await _broadcast(session.session_id, "progress", {"phase": 2, "message": "Generating attack scenarios...", "stage": "scenarios"})
 
-        source_with_rules = session.source_code + rule_context + memory_context
         from phases.phase2_scenarios import phase2_scenarios_with_source
-        scenario_result = await phase2_scenarios_with_source(
-            source_with_rules, protocol_map, session.file_name,
-            router=router_llm, max_n=max_scenarios,
-        )
+        if router_llm.is_configured():
+            # LLM path keeps the anonymized source for privacy; placeholder
+            # entry points are restored right after generation because phase 3
+            # compiles the original source. If the LLM call fails, its internal
+            # fallback would run heuristics on anonymized names (fn0/fn1) which
+            # cannot match semantic names, so re-run on the original source.
+            source_with_rules = session.source_code + rule_context + memory_context
+            scenario_result = await phase2_scenarios_with_source(
+                source_with_rules, protocol_map, session.file_name,
+                router=router_llm, max_n=max_scenarios,
+            )
+            if scenario_result.source != "llm":
+                from phases.phase1_understand import _extract_local
+                real_src = original_source_code or session.source_code
+                scenario_result = await phase2_scenarios_with_source(
+                    real_src, _extract_local(real_src), session.file_name,
+                    router=None, max_n=max_scenarios,
+                )
+        else:
+            # Local heuristic path makes no external calls, so it can use the
+            # original identifiers. Otherwise pick("withdraw"/"mint"/...) can
+            # never match anonymized names and degenerates to functions[0].
+            from phases.phase1_understand import _extract_local
+            real_src = original_source_code or session.source_code
+            scenario_result = await phase2_scenarios_with_source(
+                real_src, _extract_local(real_src), session.file_name,
+                router=None, max_n=max_scenarios,
+            )
         scenarios = scenario_result.scenarios
+
+        # Restore placeholder entry points (fn0/fn1) to real function names so
+        # phase 3 PoCs compile against the original source.
+        if anonymization_map:
+            for _s in scenarios:
+                _ep = _s.entry_point or ""
+                _s.entry_point = anonymization_map.placeholder_to_real.get(_ep, _ep)
         # If the AI agent did not actually produce contract-specific scenarios,
         # surface that clearly to the UI instead of pretending success.
         if scenario_result.source != "llm":
@@ -611,7 +645,9 @@ async def _run_exploit_pipeline(
 
         scenario = scenarios[0]
         for s in scenarios:
-            if target_function and target_function.lower() in (s.entry_point or "").lower():
+            ep = s.entry_point or ""
+            match_ep = anonymization_map.placeholder_to_real.get(ep, ep) if anonymization_map else ep
+            if target_function and target_function.lower() in match_ep.lower():
                 scenario = s
                 break
 
@@ -975,6 +1011,8 @@ async def config_set_key(body: dict):
     # Basic format validation
     if len(key) < 20:
         return JSONResponse(status_code=400, content={"error": "Key appears invalid (too short)"})
+    if "\n" in key or "\r" in key:
+        return JSONResponse(status_code=400, content={"error": "Key must not contain newlines"})
 
     env_path = Path(__file__).parent / ".env"
     try:

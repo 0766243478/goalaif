@@ -41,22 +41,32 @@ def _parse_json(text: str) -> Optional[dict]:
         return None
 
 
+def _unique_preserve_order(items) -> list:
+    seen = set()
+    out = []
+    for it in items:
+        if it not in seen:
+            seen.add(it)
+            out.append(it)
+    return out
+
+
 def _extract_local(source: str) -> ProtocolMap:
-    functions = list(set(FUNCTION_RE.findall(source)))
+    functions = _unique_preserve_order(FUNCTION_RE.findall(source))
     state_vars = []
     for m in STATE_VAR_RE.finditer(source):
         name = m.group(3)
         if name:
             state_vars.append(f"{m.group(2) or ''} {m.group(1)} {name}".strip())
     imports = IMPORT_RE.findall(source)
-    modifiers = list(set(MODIFIER_RE.findall(source)))
-    invariants = [m.group(0) for m in INVARIANT_RE.finditer(source)]
+    modifiers = _unique_preserve_order(MODIFIER_RE.findall(source))
+    invariants = _unique_preserve_order(m.group(0) for m in INVARIANT_RE.finditer(source))
     return ProtocolMap(
         functions=functions,
-        state_variables=list(set(state_vars)),
+        state_variables=_unique_preserve_order(state_vars),
         imports=imports,
         modifiers=modifiers,
-        invariants=list(set(invariants)),
+        invariants=invariants,
     )
 
 
