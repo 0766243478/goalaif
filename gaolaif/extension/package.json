@@ -2,7 +2,7 @@
   "name": "sireen",
   "displayName": "Sireen -- Web3 Security Workspace",
   "description": "AI-native smart contract security workspace. Protocol protection + Ethical hacking. 100% local.",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "publisher": "HusseinMohammed",
   "engines": {
     "vscode": "^1.85.0"
