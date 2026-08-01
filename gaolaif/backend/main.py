@@ -139,6 +139,21 @@ def _session_id(prefix: str, supplied: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
 
+# FASTAPI-VALID-001: JSON bodies are accepted as raw dicts; these helpers
+# coerce non-string / non-list values to safe defaults before they reach
+# regex, slice, Path, or dict-membership sinks, so malformed payloads get a
+# clean 400 instead of an unhandled 500.
+def _as_text(value, default: str = "") -> str:
+    return value if isinstance(value, str) else default
+
+
+def _as_list(value, default=None) -> list:
+    if isinstance(value, list):
+        return value
+    return default if default is not None else []
+
+
+
 
 @app.post("/analyze")
 async def analyze(body: dict):
@@ -160,17 +175,17 @@ async def _start_audit(body: dict):
         return quota_error
 
     session_id = _session_id("audit", body.get("session_id", ""))
-    source_code = body.get("code", "")
-    file_path = body.get("file_path", "")
+    source_code = _as_text(body.get("code", ""))
+    file_path = _as_text(body.get("file_path", ""))
     file_name = os.path.basename(file_path) if file_path else "contract.sol"
-    language = body.get("language", "solidity")
-    rpc_url = body.get("rpc_url", "")
+    language = _as_text(body.get("language", "solidity"))
+    rpc_url = _as_text(body.get("rpc_url", ""))
     try:
         max_scenarios = int(body.get("max_scenarios", 3))
         max_scenarios = max(1, min(max_scenarios, 10))
     except (TypeError, ValueError):
         max_scenarios = 3
-    rules: list[str] = body.get("rules", [])
+    rules: list[str] = _as_list(body.get("rules", []))
     anonymize: bool = body.get("anonymize", True)
     conn_id: str = body.get("_conn_id", "")      # injected by WS handler
 
@@ -214,11 +229,11 @@ async def exploit_start(body: dict):
         return quota_error
 
     session_id = _session_id("exploit", body.get("session_id", ""))
-    source_code = body.get("code", "")
-    idea = body.get("idea", "")[:500]          # M-4: cap idea length
-    target_function = body.get("target_function", "")
-    rpc_url = body.get("rpc_url", "")
-    rules: list[str] = body.get("rules", [])
+    source_code = _as_text(body.get("code", ""))
+    idea = _as_text(body.get("idea", ""))[:500]  # M-4: cap idea length
+    target_function = _as_text(body.get("target_function", ""))
+    rpc_url = _as_text(body.get("rpc_url", ""))
+    rules: list[str] = _as_list(body.get("rules", []))
     anonymize: bool = body.get("anonymize", True)
     conn_id: str = body.get("_conn_id", "")
 
@@ -258,7 +273,7 @@ async def sandbox_invariant(body: dict):
     from phases.phase3_simulate import _find_forge
     import subprocess
 
-    file_path = body.get("file_path", "")
+    file_path = _as_text(body.get("file_path", ""))
     session_id = _session_id("inv", body.get("session_id", ""))
 
     forge = _find_forge()
@@ -309,8 +324,11 @@ async def sandbox_fuzz(body: dict):
     import subprocess
     import tempfile
 
-    source_code = body.get("code", "")
-    iterations = min(int(body.get("iterations", 1000)), 100_000)
+    source_code = _as_text(body.get("code", ""))
+    try:
+        iterations = max(1, min(int(body.get("iterations", 1000)), 100_000))
+    except (TypeError, ValueError):
+        iterations = 1000
     session_id = _session_id("fuzz", body.get("session_id", ""))
 
     if not source_code:
@@ -567,6 +585,17 @@ async def _run_pipeline(
                 # Record against subscription quota
                 _record_finding_to_quota(machine_id, f)
 
+        # SECURITY-FIX: a DEGRADED audit (verification unavailable) is never
+        # "clean". Any needs_review finding is surfaced loudly so consumers
+        # cannot mistake it for a confirmed false negative.
+        unverified = [f for f in findings if f.needs_review and not f.confirmed]
+        if unverified:
+            session.warnings.append(
+                f"{len(unverified)} finding(s) could not be verified "
+                "(PoC execution unavailable). They are marked 'needs review' "
+                "and MUST be manually triaged before relying on this audit."
+            )
+
         session.status = "complete"
         await _broadcast(session.session_id, "complete", {
             "findings": [
@@ -576,6 +605,7 @@ async def _run_pipeline(
                     "severity": f.severity,        # already uppercase via __post_init__
                     "description": f.description,
                     "confirmed": f.confirmed,
+                    "needs_review": f.needs_review,
                     "category": f.category,
                     "remediation": f.remediation,
                     "affected_functions": f.affected_functions,
@@ -583,6 +613,7 @@ async def _run_pipeline(
                 for f in findings
             ],
             "report": report,
+            "warnings": list(session.warnings),
         })
 
     except Exception as e:
@@ -824,8 +855,11 @@ async def websocket_endpoint(ws: WebSocket):
 
 @app.post("/memory/search")
 async def memory_search(body: dict):
-    query = body.get("query", "")
-    top_k = min(int(body.get("top_k", 5)), 50)
+    query = _as_text(body.get("query", ""))
+    try:
+        top_k = max(1, min(int(body.get("top_k", 5)), 50))
+    except (TypeError, ValueError):
+        top_k = 5
     results = memory.search(query, top_k=top_k)
     return {
         "results": [
@@ -837,9 +871,11 @@ async def memory_search(body: dict):
 
 @app.post("/memory/save")
 async def memory_save(body: dict):
-    key = body.get("key", "").strip()
-    content = body.get("content", "").strip()
+    key = _as_text(body.get("key", "")).strip()
+    content = _as_text(body.get("content", "")).strip()
     metadata: dict = body.get("metadata", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
 
     if not key or not content:
         return JSONResponse(status_code=400, content={"error": "key and content required"})
@@ -980,8 +1016,8 @@ async def start_sandbox(body: dict):
 
 @app.post("/report/generate")
 async def generate_report(body: dict):
-    session_id = body.get("session_id", "")
-    protocol_name = body.get("protocol_name", "Unknown Protocol")
+    session_id = _as_text(body.get("session_id", ""))
+    protocol_name = _as_text(body.get("protocol_name", "Unknown Protocol"))
     session = _get_session(session_id)
     if not session or not session.findings:
         return JSONResponse(
@@ -1034,13 +1070,13 @@ async def config_set_key(body: dict):
 
 @app.post("/patch/generate")
 async def generate_patch(body: dict):
-    source_code = body.get("code", "")
+    source_code = _as_text(body.get("code", ""))
     finding_data = body.get("finding", {})
-    session_id = body.get("session_id", "")
+    session_id = _as_text(body.get("session_id", ""))
 
     if not source_code:
         return JSONResponse(status_code=400, content={"error": "No source code provided"})
-    if not finding_data:
+    if not isinstance(finding_data, dict) or not finding_data:
         return JSONResponse(status_code=400, content={"error": "No finding provided"})
 
     finding = Finding(
@@ -1072,8 +1108,8 @@ async def generate_patch(body: dict):
 
 @app.post("/report/export")
 async def export_report(body: dict):
-    session_id = body.get("session_id", "")
-    format_type = body.get("format", "markdown")
+    session_id = _as_text(body.get("session_id", ""))
+    format_type = _as_text(body.get("format", "markdown"))
     session = _get_session(session_id)
     if not session or not session.findings:
         return JSONResponse(
@@ -1109,9 +1145,9 @@ async def export_report(body: dict):
 @app.post("/chat")
 async def chat(body: dict):
     """Conversational endpoint with session context."""
-    user_message = body.get("message", "")
+    user_message = _as_text(body.get("message", ""))
     context = body.get("context", {})
-    session_id = body.get("session_id")
+    session_id = _as_text(body.get("session_id", ""))
 
     # Build context from session if available
     extra_context = ""
@@ -1131,8 +1167,9 @@ async def chat(body: dict):
     )
 
     full_message = f"Context:{extra_context}\n\nUser question: {user_message}"
-    if context.get("code"):
-        full_message = f"Code:\n```solidity\n{context['code'][:6000]}\n```\n\n{full_message}"
+    if isinstance(context, dict) and context.get("code"):
+        ctx_code = _as_text(context.get("code"))
+        full_message = f"Code:\n```solidity\n{ctx_code[:6000]}\n```\n\n{full_message}"
 
     response = await asyncio.to_thread(
         router_llm.call,
@@ -1155,8 +1192,8 @@ async def chat(body: dict):
 @app.post("/analyze/quick")
 async def analyze_quick(body: dict):
     """Fast Phase-1-only analysis (regex extraction, no LLM)."""
-    source = body.get("code", "")
-    file_path = body.get("file_path", "")
+    source = _as_text(body.get("code", ""))
+    file_path = _as_text(body.get("file_path", ""))
     proto = await phase1_understand(source, file_path)
     return {
         "functions": proto.functions,
@@ -1193,6 +1230,7 @@ async def list_sessions():
                 "findings_count": len(s.findings),
                 "created_at": _session_created_at.get(s.session_id, 0.0),
                 "file_path": s.file_path,
+                "warnings": list(getattr(s, "warnings", [])),
             }
             for s in all_sessions
         ]
@@ -1204,8 +1242,8 @@ async def list_sessions():
 @app.post("/explain")
 async def explain(body: dict):
     """Natural language explanation of a function or pattern."""
-    code = body.get("code", "")
-    question = body.get("question", "Explain this code")
+    code = _as_text(body.get("code", ""))
+    question = _as_text(body.get("question", "Explain this code"))
 
     response = await asyncio.to_thread(
         router_llm.call,
@@ -1225,8 +1263,8 @@ async def explain(body: dict):
 @app.post("/analyze/function")
 async def analyze_function(body: dict):
     """Analyze a single function for vulnerabilities."""
-    code = body.get("code", "")
-    func_name = body.get("function_name", "")
+    code = _as_text(body.get("code", ""))
+    func_name = _as_text(body.get("function_name", ""))
 
     response = await asyncio.to_thread(
         router_llm.call,

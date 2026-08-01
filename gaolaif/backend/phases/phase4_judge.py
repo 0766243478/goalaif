@@ -38,9 +38,29 @@ async def phase4_judge(
         # If neither confirmed nor needs_review from HonestSignal, skip.
         if not proof.exploit_result:
             # No HonestSignal result — old pipeline path or missing data
-            # Only keep if there's env simulation
             if env_result and env_result.simulated:
                 pass  # create finding with needs_review below
+            elif _verification_unavailable(proof):
+                # SECURITY-FIX: verification was attempted but could not
+                # complete (forge missing, compilation failed, timeout, or
+                # executor error). Never silently drop the heuristic finding —
+                # surface it as needs_review so "0 findings" cannot mask a real
+                # vulnerability. The audit is DEGRADED, not clean.
+                findings.append(Finding(
+                    title=scenario.name,
+                    severity=_estimate_severity(scenario, proof),
+                    description=scenario.description
+                    + "\n\n[VERIFICATION UNAVAILABLE] PoC could not be executed - finding requires manual review.",
+                    affected_functions=[scenario.entry_point],
+                    attack_scenario=scenario,
+                    simulation=proof,
+                    env_failure=env_result,
+                    category=scenario.attack_vector,
+                    remediation=_suggest_remediation(scenario),
+                    confirmed=False,
+                    needs_review=True,
+                ))
+                continue
             else:
                 continue
 
@@ -164,6 +184,24 @@ def _estimate_severity(scenario: AttackScenario, proof: SimulationProof) -> str:
             return "critical"
         return "high"
     return "medium"
+
+
+def _verification_unavailable(proof: SimulationProof) -> bool:
+    """True when PoC verification could not complete for infrastructure reasons.
+
+    Matches the markers written by phase3_simulate when forge is missing,
+    compilation failed after retries, execution timed out, or the executor
+    crashed. In all these cases exploit_result is None and the heuristic
+    finding must be surfaced for review rather than silently dropped.
+    """
+    markers = (
+        "[SKIPPED]",
+        "[COMPILATION FAILED",
+        "[TIMEOUT]",
+        "[ERROR] forge test execution failed",
+        "[ERROR] Pipeline execution failed",
+    )
+    return any(m in (proof.forge_output or "") for m in markers)
 
 
 def _severity_score(severity: str) -> int:

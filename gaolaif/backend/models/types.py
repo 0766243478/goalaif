@@ -215,3 +215,4 @@ class AuditSession:
     findings: list[Finding] = field(default_factory=list)
     status: str = "created"
     error: Optional[str] = None
+    warnings: list[str] = field(default_factory=list)

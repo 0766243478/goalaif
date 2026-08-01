@@ -10,8 +10,8 @@ from typing import Optional
 
 from llm.router import Router
 from models.types import (
-    AttackScenario, SimulationProof, EnvFailureResult,
-    PoCExecutionResult, PoCExecutionStatus, ErrorCategory
+    AttackScenario, SimulationProof, EnvFailureResult, ExploitResult,
+    PoCExecutionResult, PoCExecutionStatus, ErrorCategory, VerificationStatus
 )
 
 
@@ -97,8 +97,23 @@ async def _run_forge_test(
     forge_exe = _find_forge()
     if not forge_exe:
         proof.confirmed = False
-        proof.forge_output = "[SKIPPED] forge binary not found on PATH"
+        proof.forge_output = "[SKIPPED] forge binary not found on PATH - PoC verification unavailable"
         proof.poc_code = _generate_poc(source_code, scenario)
+        # SECURITY-FIX: verification infrastructure missing. Never let this
+        # silently drop the heuristic finding downstream - mark it unverifiable
+        # so phase4 surfaces it as needs_review instead of "0 findings".
+        proof.exploit_result = ExploitResult(
+            verification_status=VerificationStatus.COMPILATION_FAILED,
+            hypothesis=scenario.description,
+            attack_vector=scenario.attack_vector,
+            target_function=scenario.entry_point,
+            poc_generated=False,
+            compiled=False,
+            forge_output=proof.forge_output,
+            confirmed=False,
+            needs_review=True,
+            review_reason="Forge (foundry) binary not found on PATH - heuristic finding could not be verified. Manual review required.",
+        )
         return proof
 
     start = time.perf_counter()
