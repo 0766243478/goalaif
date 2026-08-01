@@ -22,12 +22,60 @@ FALLBACK_SCENARIO = AttackScenario(
     estimated_impact="Full drain of ETH balance",
     scenario_type="reentrancy")
 
+def _function_bodies(source_code: str) -> dict:
+    """Map each function name to its brace-balanced body text.
+
+    Used by the heuristic targeting below so a reentrancy / access-control
+    scenario targets the function that ACTUALLY contains the external call,
+    not merely the first declared function when names do not match the
+    typical withdraw/deposit vocabulary (e.g. functions named d/w).
+    """
+    bodies = {}
+    for m in re.finditer(r"function\s+([a-zA-Z_]\w*)\s*\(", source_code):
+        name = m.group(1)
+        brace = source_code.find("{", m.end())
+        if brace == -1:
+            continue
+        depth = 0
+        i = brace
+        while i < len(source_code):
+            if source_code[i] == "{":
+                depth += 1
+            elif source_code[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    bodies[name] = source_code[brace:i + 1]
+                    break
+            i += 1
+    return bodies
+
+
 def _generate_heuristic_defaults(source_code: str, protocol_map: ProtocolMap):
     scenarios = []
     functions = [f.lower() for f in protocol_map.functions]
     code = source_code.lower()
+    _bodies = _function_bodies(source_code)
 
-    def pick(lst):
+    def pick(lst, prefer_call=False):
+        if prefer_call:
+            # Functions that perform an external call (.call / .transfer / .send)
+            call_funcs = [
+                f for f, b in _bodies.items()
+                if re.search(r"\.\s*call\s*[{/(]|\.transfer\s*\(|\.send\s*\(", b)
+            ]
+            # Prefer the ones that write to storage after the call (CEI violation)
+            cei_funcs = [
+                f for f in call_funcs
+                if re.search(r"\b[a-zA-Z_]\w*\s*[+\-*/]?=\s*", _bodies[f])
+            ]
+            if cei_funcs:
+                call_funcs = cei_funcs
+            if call_funcs:
+                for p in lst:
+                    for f in call_funcs:
+                        if p in f.replace("_", ""):
+                            return f
+                return call_funcs[0]
         for p in lst:
             for f in functions:
                 if p in f.replace("_",""):
@@ -44,7 +92,7 @@ def _generate_heuristic_defaults(source_code: str, protocol_map: ProtocolMap):
     has_upgrade = "upgrade" in code or any("upgrade" in f for f in functions)
 
     if has_call or has_transfer:
-        entry = pick(["withdraw","claim","redeem","exit","unlock"])
+        entry = pick(["withdraw","claim","redeem","exit","unlock"], prefer_call=True)
         scenarios.append(AttackScenario(
             name=f"Reentrancy on {entry}",
             description=f"External call before state update on {entry}().",
@@ -54,7 +102,7 @@ def _generate_heuristic_defaults(source_code: str, protocol_map: ProtocolMap):
             estimated_impact="Full ETH drain", scenario_type="reentrancy"))
 
     if not has_mods and (has_call or has_transfer or "mint(" in code):
-        entry = pick(["setAdmin","mint","withdraw","init","set"])
+        entry = pick(["setAdmin","mint","withdraw","init","set"], prefer_call=True)
         scenarios.append(AttackScenario(
             name=f"Access control on {entry}",
             description="No ownership restriction on admin function.",
