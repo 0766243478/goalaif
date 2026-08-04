@@ -7,6 +7,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
   private _router?: MessageRouter;
   private _listenerRegistered = false;
+  private _iconUri?: vscode.Uri;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -20,12 +21,19 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   resolveWebviewView(webviewView: vscode.WebviewView) {
     this._view = webviewView;
 
+    // Include both dist/ AND media/ folders as accessible resource roots
+    const mediaRoot = vscode.Uri.joinPath(this.extensionUri, 'media');
     webviewView.webview.options = {
       enableScripts: true,
-      localResourceRoots: [this.extensionUri],
+      localResourceRoots: [this.extensionUri, mediaRoot],
     };
 
     webviewView.webview.html = this._getHtml(webviewView.webview);
+
+    // Cache the icon URI so we can send it on demand when the webview requests it.
+    this._iconUri = webviewView.webview.asWebviewUri(
+      vscode.Uri.joinPath(this.extensionUri, 'media', 'icon.png')
+    );
 
     if (!this._listenerRegistered) {
       this._listenerRegistered = true;
@@ -41,6 +49,15 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     this._view?.webview.postMessage(message);
   }
 
+  sendMediaConfig() {
+    if (this._iconUri) {
+      this.postMessageToWebview({
+        command: 'sireen.media.config',
+        payload: { iconUri: this._iconUri.toString() },
+      });
+    }
+  }
+
   private _getHtml(webview: vscode.Webview): string {
     const scriptUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.extensionUri, 'dist', 'webview.js')
@@ -51,7 +68,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' ${webview.cspSource}; script-src ${webview.cspSource};">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' ${webview.cspSource}; script-src ${webview.cspSource}; img-src ${webview.cspSource} data:;">
   <title>Sireen</title>
 </head>
 <body>

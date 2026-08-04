@@ -2,8 +2,8 @@
   "name": "sireen",
   "displayName": "Sireen -- Web3 Security Workspace",
   "description": "AI-native smart contract security workspace. Protocol protection + Ethical hacking. 100% local.",
-  "version": "1.0.2",
-  "publisher": "HusseinMohammed",
+  "version": "1.0.3",
+  "publisher": "Hussein-M",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -24,7 +24,7 @@
   "icon": "media/icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/husseinhmed/gaolaif"
+    "url": "https://github.com/0766243478/goalaif.git"
   },
   "activationEvents": [
     "onStartupFinished",
@@ -64,7 +64,7 @@
         {
           "id": "gaolaif-sidebar",
           "title": "Sireen",
-          "icon": "media/sireen-logo.png"
+          "icon": "media/icon.png"
         }
       ]
     },

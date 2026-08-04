@@ -1,6 +1,13 @@
 import { useState } from 'react';
 import { useStore } from '../store';
 import { useMessageBus } from '../hooks/useMessageBus';
+import { Text } from '../ui/primitives/Text';
+import { Flex } from '../ui/primitives/Flex';
+import { Stack } from '../ui/primitives/Stack';
+import { Card } from '../ui/components/Card';
+import { Input } from '../ui/components/Input';
+import { Button } from '../ui/components/Button';
+import { Badge } from '../ui/components/Badge';
 
 export default function SettingsView() {
   const { state, dispatch } = useStore();
@@ -18,79 +25,89 @@ export default function SettingsView() {
   };
 
   return (
-    <div className="animate-fade-in">
-      <div style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 'var(--text-xl)', fontWeight: 700, color: 'var(--sireen-text-primary)' }}>
+    <Stack gap={3}>
+      <Stack gap={0}>
+        <Text variant="h1" weight="semibold">
           Settings
-        </div>
-        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--sireen-text-muted)' }}>
+        </Text>
+        <Text variant="caption" color="muted">
           Configure Sireen
-        </div>
-      </div>
+        </Text>
+      </Stack>
 
-      <div className="card" style={{ marginBottom: 12 }}>
-        <div className="card-header">
-          <span style={{ fontSize: 'var(--text-sm)', fontWeight: 600 }}>API Key</span>
-          <span className={`badge ${state.apiKeySet ? 'badge-success' : 'badge-ghost'}`}>
-            {state.apiKeySet ? 'CONFIGURED' : 'NOT SET'}
-          </span>
-        </div>
-        <div className="card-body">
-          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--sireen-text-muted)', marginBottom: 8 }}>
+      <Card padded>
+        <Stack gap={2}>
+          <Flex align="center" justify="space-between">
+            <Text variant="body" weight="semibold">
+              API Key
+            </Text>
+            <Badge variant={state.apiKeySet ? 'filled' : 'outline'} color={state.apiKeySet ? 'green' : 'gray'}>
+              {state.apiKeySet ? 'CONFIGURED' : 'NOT SET'}
+            </Badge>
+          </Flex>
+          <Text variant="caption" color="muted">
             OpenRouter API key for LLM access. Free models available at openrouter.ai
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <input
+          </Text>
+          <Flex gap={2}>
+            <Input
               type="password"
               value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
+              onChange={e => setApiKey(e.target.value)}
               placeholder="sk-or-v1-..."
-              className="input"
-              style={{ flex: 1, fontSize: 'var(--text-xs)' }}
+              aria-label="API key"
+              style={{ flex: 1 }}
             />
-            <button className="btn-primary" onClick={saveApiKey} style={{ fontSize: 'var(--text-xs)', whiteSpace: 'nowrap' }}>
+            <Button variant="primary" onClick={saveApiKey} loading={saved}>
               {saved ? 'SAVED' : 'Save'}
-            </button>
-          </div>
-        </div>
-      </div>
+            </Button>
+          </Flex>
+        </Stack>
+      </Card>
 
-      <div className="card" style={{ marginBottom: 12 }}>
-        <div className="card-header">
-          <span style={{ fontSize: 'var(--text-sm)', fontWeight: 600 }}>RPC Endpoint</span>
-        </div>
-        <div className="card-body">
-          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--sireen-text-muted)', marginBottom: 8 }}>
+      <Card padded>
+        <Stack gap={2}>
+          <Text variant="body" weight="semibold">
+            RPC Endpoint
+          </Text>
+          <Text variant="caption" color="muted">
             Default EVM RPC URL for fork simulation
-          </div>
-          <input
-            value={rpcUrl}
-            onChange={(e) => setRpcUrl(e.target.value)}
-            className="input"
-            style={{ fontSize: 'var(--text-xs)' }}
-          />
-        </div>
-      </div>
+          </Text>
+          <Input value={rpcUrl} onChange={e => setRpcUrl(e.target.value)} aria-label="RPC URL" />
+        </Stack>
+      </Card>
 
-      <div className="card" style={{ marginBottom: 12 }}>
-        <div className="card-header">
-          <span style={{ fontSize: 'var(--text-sm)', fontWeight: 600 }}>Connection</span>
-        </div>
-        <div className="card-body">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--sireen-text-muted)' }}>Backend Status</span>
-            <span className={`badge ${state.connectionStatus === 'connected' ? 'badge-success' : state.connectionStatus === 'connecting' ? 'badge-info' : 'badge-ghost'}`}>
+      <Card padded>
+        <Stack gap={2}>
+          <Text variant="body" weight="semibold">
+            Connection
+          </Text>
+          <Flex align="center" justify="space-between">
+            <Text variant="caption" color="muted">
+              Backend Status
+            </Text>
+            <Badge
+              variant="filled"
+              color={
+                state.connectionStatus === 'connected'
+                  ? 'green'
+                  : state.connectionStatus === 'connecting'
+                    ? 'blue'
+                    : 'gray'
+              }
+            >
               {state.connectionStatus.toUpperCase()}
-            </span>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
-            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--sireen-text-muted)' }}>Sandbox</span>
-            <span className={`badge ${state.sandboxReady ? 'badge-success' : 'badge-ghost'}`}>
+            </Badge>
+          </Flex>
+          <Flex align="center" justify="space-between">
+            <Text variant="caption" color="muted">
+              Sandbox
+            </Text>
+            <Badge variant="filled" color={state.sandboxReady ? 'green' : 'gray'}>
               {state.sandboxReady ? 'READY' : 'OFFLINE'}
-            </span>
-          </div>
-        </div>
-      </div>
-    </div>
+            </Badge>
+          </Flex>
+        </Stack>
+      </Card>
+    </Stack>
   );
 }

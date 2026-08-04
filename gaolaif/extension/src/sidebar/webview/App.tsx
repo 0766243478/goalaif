@@ -1,39 +1,45 @@
 import { useState, useEffect } from 'react';
-import { StoreProvider } from './store';
-import { CopilotLayout } from './layouts/CopilotLayout';
+import { StoreProvider, useStore } from './store';
+import { CopilotLayout } from './ui/layouts/CopilotLayout';
+import { ToastProvider } from './ui/components/Toast';
 import { useMessageBus } from './hooks/useMessageBus';
-import { useStore } from './store';
-import { Icon } from './components/Icon';
-import './styles.css';
+import { Text } from './ui/primitives/Text';
+import { Stack } from './ui/primitives/Stack';
+import { Input } from './ui/components/Input';
+import { Button } from './ui/components/Button';
+import { Alert } from './ui/components/Alert';
+import './ui'; // imports tokens.css + components.css
+import './styles.css'; // legacy styles — will be removed after full migration
 
 function AppContent() {
-  const { state, dispatch } = useStore();
-  const { send } = useMessageBus();
+  const { state } = useStore();
+  const { send, iconUri } = useMessageBus();
 
   useEffect(() => {
     send('sireen.apiKey.status', {});
+    send('sireen.media.request', {});
   }, [send]);
 
   if (state.apiKeySet === false) {
-    return <ApiKeySetup onDone={() => dispatch({ type: 'SET_API_KEY', set: true })} />;
+    return <ApiKeySetup iconUri={iconUri} />;
   }
-
+  if (state.apiKeySet === null) {
+    return (
+      <Stack align="center" justify="center" style={{ height: '100vh' }}>
+        <Text variant="body-sm" color="muted">Loading SIREEN…</Text>
+      </Stack>
+    );
+  }
   return <CopilotLayout />;
 }
 
-function ApiKeySetup({ onDone }: { onDone: () => void }) {
+function ApiKeySetup({ iconUri }: { iconUri: string }) {
   const [key, setKey] = useState('');
   const [msg, setMsg] = useState('');
   const [sending, setSending] = useState(false);
-  const { state } = useStore();
+  const { dispatch } = useStore();
   const { send } = useMessageBus();
-
-  useEffect(() => {
-    if (!sending && state.apiKeySet === true && msg === 'Saving...') {
-      onDone();
-    }
-  }, [state.apiKeySet, sending, msg, onDone]);
-
+  
   const submit = () => {
     if (key.length < 20) {
       setMsg('Key appears invalid (too short). Get one at openrouter.ai');
@@ -42,65 +48,88 @@ function ApiKeySetup({ onDone }: { onDone: () => void }) {
     setSending(true);
     setMsg('Saving...');
     send('sireen.settings.setApiKey', { key });
+    setTimeout(() => {
+      setSending(false);
+      dispatch({ type: 'SET_API_KEY', set: true });
+    }, 2000);
   };
 
+  const isError = msg.startsWith('Key');
+
   return (
-    <div style={{
-      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-      height: '100vh', padding: 24, background: 'var(--sireen-abyss)',
-    }}>
-      <div style={{
-        width: 48, height: 48, borderRadius: 'var(--radius-xl)',
-        background: 'var(--sireen-amber-bg)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        marginBottom: 16,
-      }}>
-        <Icon name="brand" size={24} color="var(--sireen-amber)" />
+    <Stack
+      align="center"
+      justify="center"
+      gap={3}
+      style={{ height: '100vh', padding: 'var(--sireen-space-6)', background: 'var(--sireen-bg-primary)' }}
+    >
+      <div
+        style={{
+          width: 48,
+          height: 48,
+          borderRadius: 'var(--sireen-radius-lg)',
+          background: 'var(--sireen-bg-inactive)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <img 
+          src={iconUri || ''} 
+          alt="SIREEN Logo" 
+          style={{ width: 36, height: 36, objectFit: 'contain' }} 
+        />
       </div>
-      <div style={{ fontSize: 'var(--text-xl)', fontWeight: 700, color: 'var(--sireen-amber)', marginBottom: 8 }}>
+      <Text variant="h1" weight="semibold" style={{ color: 'var(--sireen-accent-amber)' }}>
         SIREEN SETUP
-      </div>
-      <div style={{ fontSize: 'var(--text-sm)', color: 'var(--sireen-text-secondary)', marginBottom: 16, textAlign: 'center', maxWidth: 300 }}>
-        Enter your OpenRouter API key to enable AI-powered auditing.
+      </Text>
+      <Text variant="body-sm" color="secondary" style={{ textAlign: 'center', maxWidth: 300 }}>
+        Enter your OpenRouter API key to enable AI-powered auditing.<br/>
         Free models available at openrouter.ai.
+      </Text>
+      <div style={{ width: '100%', maxWidth: 320 }}>
+        <Input
+          type="password"
+          value={key}
+          onChange={(e) => setKey(e.target.value)}
+          placeholder="sk-or-v1-..."
+          aria-label="OpenRouter API key"
+          disabled={sending}
+          invalid={isError}
+          style={{ width: '100%' }}
+        />
       </div>
-      <input
-        type="password"
-        value={key}
-        onChange={(e) => setKey(e.target.value)}
-        onKeyDown={(e) => e.key === 'Enter' && submit()}
-        placeholder="sk-or-v1-..."
-        className="input"
-        style={{ maxWidth: 320, marginBottom: 8 }}
-        disabled={sending}
-      />
-      <button
-        className="btn-primary"
+      <Button
+        variant="primary"
+        block
         onClick={submit}
-        style={{ maxWidth: 320, width: '100%' }}
-        disabled={sending}
+        loading={sending}
+        style={{ maxWidth: 320 }}
       >
         {sending ? 'SAVING...' : 'SAVE KEY'}
-      </button>
+      </Button>
       {msg && (
-        <div style={{ fontSize: 'var(--text-xs)', marginTop: 8,
-          color: msg.startsWith('Key') ? 'var(--sireen-critical)' :
-                 msg === 'Saving...' ? 'var(--sireen-amber)' : 'var(--sireen-text-muted)',
-        }}>
-          {msg}
+        <div style={{ maxWidth: 320, width: '100%' }}>
+          {isError ? (
+            <Alert variant="error">{msg}</Alert>
+          ) : (
+            <Alert variant="info">{msg}</Alert>
+          )}
         </div>
       )}
-      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--sireen-text-ghost)', marginTop: 16 }}>
+      <Text variant="caption" color="muted">
         You can skip this and set it later via Settings.
-      </div>
-    </div>
+      </Text>
+    </Stack>
   );
 }
 
 export default function App() {
   return (
     <StoreProvider>
-      <AppContent />
+      <ToastProvider>
+        <AppContent />
+      </ToastProvider>
     </StoreProvider>
   );
 }

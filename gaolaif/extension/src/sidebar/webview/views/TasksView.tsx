@@ -1,7 +1,13 @@
 import { useState } from 'react';
 import { useStore } from '../store';
-import { EmptyState } from '../components/EmptyState';
-import { Icon } from '../components/Icon';
+import { Text } from '../ui/primitives/Text';
+import { Flex } from '../ui/primitives/Flex';
+import { Stack } from '../ui/primitives/Stack';
+import { Card } from '../ui/components/Card';
+import { Input } from '../ui/components/Input';
+import { Button } from '../ui/components/Button';
+import { EmptyState } from '../ui/components/EmptyState';
+import { Icon } from '../ui/primitives/Icon';
 
 export default function TasksView() {
   const { state, dispatch } = useStore();
@@ -30,99 +36,98 @@ export default function TasksView() {
   };
 
   return (
-    <div className="animate-fade-in">
-      <div style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 'var(--text-xl)', fontWeight: 700, color: 'var(--sireen-text-primary)' }}>
+    <Stack gap={3}>
+      <Stack gap={0}>
+        <Text variant="h1" weight="semibold">
           Tasks
-        </div>
-        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--sireen-text-muted)' }}>
+        </Text>
+        <Text variant="caption" color="muted">
           {state.tasks.filter(t => t.status === 'open').length} open tasks
-        </div>
-      </div>
+        </Text>
+      </Stack>
 
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-        <input
+      <Flex gap={2}>
+        <Input
           value={newTask}
-          onChange={(e) => setNewTask(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && addTask()}
+          onChange={e => setNewTask(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && addTask()}
           placeholder="Add a task..."
-          className="input"
-          style={{ flex: 1, fontSize: 'var(--text-sm)' }}
+          aria-label="New task"
+          style={{ flex: 1 }}
         />
-        <button className="btn-primary" onClick={addTask} style={{ fontSize: 'var(--text-xs)', display: 'flex', alignItems: 'center', gap: 4 }}>
-          <Icon name="plus" size={12} />
+        <Button variant="primary" iconLeft="plus" onClick={addTask}>
           Add
-        </button>
-      </div>
+        </Button>
+      </Flex>
 
-      <div style={{ display: 'flex', gap: 4, marginBottom: 12 }}>
-        {(['all', 'open', 'done'] as const).map((f) => (
-          <button
+      <Flex gap={1}>
+        {(['all', 'open', 'done'] as const).map(f => (
+          <Button
             key={f}
+            variant={filter === f ? 'primary' : 'outline'}
+            size="sm"
             onClick={() => setFilter(f)}
-            className={filter === f ? 'btn-primary' : 'btn-ghost'}
-            style={{
-              fontSize: 'var(--text-xs)',
-              padding: '3px 8px',
-              textTransform: 'capitalize',
-              ...(filter === f ? {} : { border: '1px solid var(--sireen-border)' }),
-            }}
           >
             {f}
-          </button>
+          </Button>
         ))}
-      </div>
+      </Flex>
 
       {filteredTasks.length === 0 ? (
-        <EmptyState
-          title="No tasks"
-          message="Add a task to track your research"
-        />
+        <EmptyState icon="tasks" title="No tasks" message="Add a task to track your research" />
       ) : (
-        filteredTasks.map((task) => (
-          <div
-            key={task.id}
-            className="card animate-fade-in"
-            style={{ marginBottom: 6 }}
-          >
-            <div className="card-body" style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
-              <button
-                onClick={() => dispatch({ type: 'TOGGLE_TASK', id: task.id })}
-                style={{
-                  width: 18, height: 18, borderRadius: 3,
-                  border: `1px solid ${task.status === 'done' ? 'var(--sireen-green)' : 'var(--sireen-border)'}`,
-                  background: task.status === 'done' ? 'var(--sireen-green)' : 'transparent',
-                  cursor: 'pointer',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  flexShrink: 0,
-                }}
-              >
-                {task.status === 'done' && <Icon name="check" size={12} color="#fff" />}
-              </button>
-              <div style={{ flex: 1 }}>
-                <div style={{
-                  fontSize: 'var(--text-sm)',
-                  color: task.status === 'done' ? 'var(--sireen-text-ghost)' : 'var(--sireen-text-primary)',
-                  textDecoration: task.status === 'done' ? 'line-through' : 'none',
-                }}>
+        <Stack gap={1}>
+          {filteredTasks.map(task => (
+            <Card key={task.id} style={{ padding: 'var(--sireen-space-2) var(--sireen-space-3)' }}>
+              <Flex align="center" gap={2}>
+                <button
+                  onClick={() => dispatch({ type: 'TOGGLE_TASK', id: task.id })}
+                  aria-label={task.status === 'done' ? 'Mark as open' : 'Mark as done'}
+                  style={{
+                    width: 18,
+                    height: 18,
+                    borderRadius: 'var(--sireen-radius-sm)',
+                    border: `1px solid ${task.status === 'done' ? 'var(--sireen-success-fg)' : 'var(--sireen-border)'}`,
+                    background: task.status === 'done' ? 'var(--sireen-success-fg)' : 'transparent',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0,
+                  }}
+                >
+                  {task.status === 'done' && <Icon name="check" size={12} color="#fff" />}
+                </button>
+                <Text
+                  variant="body-sm"
+                  style={{
+                    flex: 1,
+                    color: task.status === 'done' ? 'var(--sireen-fg-muted)' : 'var(--sireen-fg-primary)',
+                    textDecoration: task.status === 'done' ? 'line-through' : 'none',
+                  }}
+                >
                   {task.title}
-                </div>
-              </div>
-              <button
-                onClick={() => dispatch({ type: 'DELETE_TASK', id: task.id })}
-                style={{
-                  background: 'transparent', border: 'none',
-                  color: 'var(--sireen-text-ghost)', cursor: 'pointer',
-                  display: 'flex', padding: 2,
-                }}
-                title="Delete task"
-              >
-                <Icon name="trash" size={14} />
-              </button>
-            </div>
-          </div>
-        ))
+                </Text>
+                <button
+                  onClick={() => dispatch({ type: 'DELETE_TASK', id: task.id })}
+                  aria-label="Delete task"
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: 'var(--sireen-fg-muted)',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    padding: 'var(--sireen-space-1)',
+                    borderRadius: 'var(--sireen-radius-sm)',
+                  }}
+                >
+                  <Icon name="trash" size="sm" />
+                </button>
+              </Flex>
+            </Card>
+          ))}
+        </Stack>
       )}
-    </div>
+    </Stack>
   );
 }

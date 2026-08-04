@@ -62,6 +62,10 @@ export class MessageRouter {
   }
 
   private registerDefaults() {
+    this.on('sireen.media.request', async () => {
+      this.sidebarProvider.sendMediaConfig();
+    });
+
     this.on('sireen.audit.request', async (p) => {
       const result = await this.backendClient.post('/audit/start', p);
       this.sidebarProvider.postMessageToWebview({

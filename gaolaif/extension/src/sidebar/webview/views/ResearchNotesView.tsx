@@ -1,46 +1,51 @@
 import { useStore } from '../store';
-import { EmptyState } from '../components/EmptyState';
+import { Text } from '../ui/primitives/Text';
+import { Stack } from '../ui/primitives/Stack';
 
 export default function ResearchNotesView() {
   const { state, dispatch } = useStore();
 
   return (
-    <div className="animate-fade-in">
-      <div style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 'var(--text-xl)', fontWeight: 700, color: 'var(--sireen-text-primary)' }}>
+    <Stack gap={3}>
+      <Stack gap={0}>
+        <Text variant="h1" weight="semibold">
           Research Notes
-        </div>
-        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--sireen-text-muted)' }}>
+        </Text>
+        <Text variant="caption" color="muted">
           Auto-saved research notes
-        </div>
-      </div>
+        </Text>
+      </Stack>
 
       <textarea
         value={state.researchNotes}
-        onChange={(e) => dispatch({ type: 'SET_NOTES', content: e.target.value })}
-        placeholder="Start taking notes about this protocol...
+        onChange={e => dispatch({ type: 'SET_NOTES', content: e.target.value })}
+        placeholder={`Start taking notes about this protocol...
 
 Examples:
 - What does this contract do?
 - What assumptions does it make?
 - What external calls does it make?
-- What invariants should hold?"
+- What invariants should hold?`}
+        aria-label="Research notes"
         style={{
           width: '100%',
           minHeight: 300,
-          padding: 12,
-          background: 'var(--sireen-abyss)',
-          border: '1px solid var(--sireen-border)',
-          borderRadius: 'var(--radius-md)',
-          color: 'var(--sireen-text-primary)',
-          fontSize: 'var(--text-sm)',
-          fontFamily: 'var(--font-mono)',
+          padding: 'var(--sireen-space-3)',
+          background: 'var(--sireen-input-bg)',
+          border: '1px solid var(--sireen-input-border)',
+          borderRadius: 'var(--sireen-radius-md)',
+          color: 'var(--sireen-input-fg)',
+          fontSize: 'var(--sireen-font-size-body)',
+          fontFamily: 'var(--sireen-font-mono)',
           resize: 'vertical',
           outline: 'none',
-          lineHeight: 1.6,
+          lineHeight: 'var(--sireen-line-height-body)',
           boxSizing: 'border-box',
+          transition: 'border-color var(--sireen-duration-fast) var(--sireen-ease)',
         }}
+        onFocus={e => (e.currentTarget.style.borderColor = 'var(--sireen-input-focus-border)')}
+        onBlur={e => (e.currentTarget.style.borderColor = 'var(--sireen-input-border)')}
       />
-    </div>
+    </Stack>
   );
 }

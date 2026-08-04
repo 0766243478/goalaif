@@ -1,10 +1,11 @@
-import { useEffect, useCallback } from 'react';
+import { useEffect, useCallback, useState } from 'react';
 import { vscode } from '../vscodeApi';
 import { useStore } from '../store';
 import type { ChatMessage, ThinkingStep, ExploitRecord, MemoryEntry, ProactiveSuggestion, LogEntry, ProtocolState, PipelineStage, ViewId } from '../store/types';
 
 export function useMessageBus() {
   const { dispatch } = useStore();
+  const [iconUri, setIconUri] = useState<string>('');
 
   useEffect(() => {
     const handler = (event: MessageEvent) => {
@@ -12,6 +13,10 @@ export function useMessageBus() {
       if (!msg?.command) return;
 
       switch (msg.command) {
+        case 'sireen.media.config':
+          setIconUri((msg.payload?.iconUri as string) || '');
+          break;
+
         case 'sireen.connection.status':
           dispatch({ type: 'SET_CONNECTION', status: msg.payload.status });
           break;
@@ -345,5 +350,5 @@ export function useMessageBus() {
     vscode.postMessage({ command, payload });
   }, []);
 
-  return { send };
+  return { send, iconUri };
 }

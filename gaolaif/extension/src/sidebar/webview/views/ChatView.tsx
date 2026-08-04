@@ -1,10 +1,14 @@
 import { useRef, useEffect } from 'react';
 import { useStore } from '../store';
 import { useMessageBus } from '../hooks/useMessageBus';
-import { ChatMessage } from '../components/ChatMessage';
-import { ChatInput } from '../components/ChatInput';
-import { ThinkingIndicator } from '../components/ThinkingIndicator';
-import { AuditProgressBar } from '../components/AuditProgressBar';
+import { ChatMessage } from '../ui/components/ChatMessage';
+import { ChatInput } from '../ui/components/ChatInput';
+import { ThinkingIndicator } from '../ui/components/ThinkingIndicator';
+import { AuditProgressBar } from '../ui/components/AuditProgressBar';
+import { Text } from '../ui/primitives/Text';
+import { Flex } from '../ui/primitives/Flex';
+import { Stack } from '../ui/primitives/Stack';
+import { Button } from '../ui/components/Button';
 
 export default function ChatView() {
   const { state, dispatch } = useStore();
@@ -17,50 +21,42 @@ export default function ChatView() {
     }
   }, [state.chatMessages, state.isThinking]);
 
-  const starterQuestions = [
-    'Analyze attack surface',
-    'Find reentrancy bugs',
-    'Generate PoC',
-    'Suggest patches',
-  ];
+  const starterQuestions = ['Analyze attack surface', 'Find reentrancy bugs', 'Generate PoC', 'Suggest patches'];
 
   return (
-    <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <div style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 'var(--text-xl)', fontWeight: 700, color: 'var(--sireen-text-primary)' }}>
+    <Flex direction="column" style={{ height: '100%' }}>
+      <Stack gap={0} style={{ marginBottom: 'var(--sireen-space-3)' }}>
+        <Text variant="h1" weight="semibold">
           Chat
-        </div>
-        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--sireen-text-muted)' }}>
+        </Text>
+        <Text variant="caption" color="muted">
           Ask Sireen anything about your code
-        </div>
-      </div>
+        </Text>
+      </Stack>
 
       <AuditProgressBar />
 
-      <div ref={scrollRef} style={{ flex: 1, overflow: 'auto', paddingRight: 4 }}>
+      <div ref={scrollRef} style={{ flex: 1, overflow: 'auto', paddingRight: 'var(--sireen-space-1)' }}>
         {state.chatMessages.length === 0 && !state.isThinking && (
-          <div style={{
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'center',
-            height: '60%',
-            color: 'var(--sireen-text-ghost)',
-            textAlign: 'center',
-            gap: 12,
-          }}>
-            <div style={{ fontSize: 'var(--text-md)', color: 'var(--sireen-text-secondary)', fontWeight: 600 }}>
+          <Flex
+            direction="column"
+            align="center"
+            justify="center"
+            gap={3}
+            style={{ height: '60%', textAlign: 'center' }}
+          >
+            <Text variant="h2" weight="semibold" color="secondary">
               SIREEN
-            </div>
-            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--sireen-text-ghost)' }}>
+            </Text>
+            <Text variant="body-sm" color="muted">
               How can I help with this contract?
-            </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'center', maxWidth: 300 }}>
-              {starterQuestions.map((q) => (
-                <button
+            </Text>
+            <Flex wrap="wrap" gap={1} justify="center" style={{ maxWidth: 300 }}>
+              {starterQuestions.map(q => (
+                <Button
                   key={q}
-                  className="btn-secondary"
-                  style={{ fontSize: 'var(--text-xs)', padding: '4px 8px' }}
+                  variant="secondary"
+                  size="sm"
                   onClick={() => {
                     dispatch({
                       type: 'ADD_CHAT_MESSAGE',
@@ -70,22 +66,24 @@ export default function ChatView() {
                   }}
                 >
                   {q}
-                </button>
+                </Button>
               ))}
-            </div>
-          </div>
+            </Flex>
+          </Flex>
         )}
 
-        {state.chatMessages.map((msg) => (
-          <ChatMessage key={msg.id} message={msg} />
-        ))}
+        <Stack gap={2}>
+          {state.chatMessages.map(msg => (
+            <ChatMessage key={msg.id} message={msg} />
+          ))}
+        </Stack>
 
         {state.isThinking && <ThinkingIndicator steps={state.thinkingSteps} />}
       </div>
 
       <ChatInput
         context={state.chatContext}
-        onSubmit={(message) => {
+        onSubmit={message => {
           dispatch({
             type: 'ADD_CHAT_MESSAGE',
             message: { id: crypto.randomUUID(), role: 'user', content: message, timestamp: Date.now() },
@@ -96,6 +94,6 @@ export default function ChatView() {
           send('sireen.chat slash', { command, args, context: state.chatContext, session_id: state.activeSessionId });
         }}
       />
-    </div>
+    </Flex>
   );
 }

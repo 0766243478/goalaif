@@ -1,0 +1,214 @@
+/**
+ * SIREEN Design System — Design Tokens
+ *
+ * Single source of truth for all visual values. Every component must consume
+ * these tokens. No hardcoded colors, spacing, radius, or typography values
+ * are permitted anywhere else in the codebase.
+ *
+ * Color tokens map to VS Code's theme variable registry so the extension
+ * adapts to every theme (Dark, Light, High Contrast, community themes).
+ * Only severity colors and brand accents are custom (no VS Code equivalent).
+ */
+
+/* ============================================================
+ * COLOR TOKENS — mapped to VS Code theme variables
+ * ============================================================ */
+:root {
+  /* Surfaces / backgrounds */
+  --sireen-bg-primary: var(--vscode-editor-background, #1e1e1e);
+  --sireen-bg-secondary: var(--vscode-sideBar-background, #252526);
+  --sireen-bg-tertiary: var(--vscode-input-background, #3c3c3c);
+  --sireen-bg-elevated: var(--vscode-editorWidget-background, #2d2d30);
+  --sireen-bg-hover: var(--vscode-list-hoverBackground, rgba(0, 0, 0, 0.04));
+  --sireen-bg-active: var(--vscode-list-activeSelectionBackground, #094771);
+  --sireen-bg-inactive: var(--vscode-list-inactiveSelectionBackground, #37373d);
+
+  /* Foreground / text */
+  --sireen-fg-primary: var(--vscode-editor-foreground, #cccccc);
+  --sireen-fg-secondary: var(--vscode-descriptionForeground, rgba(204, 204, 204, 0.7));
+  --sireen-fg-muted: var(--vscode-disabledForeground, rgba(204, 204, 204, 0.5));
+  --sireen-fg-on-accent: var(--vscode-button-foreground, #ffffff);
+
+  /* Borders */
+  --sireen-border: var(--vscode-editorWidget-border, #2d2d30);
+  --sireen-border-subtle: var(--vscode-sideBar-border, rgba(128, 128, 128, 0.2));
+  --sireen-border-focus: var(--vscode-focusBorder, #007fd4);
+
+  /* Interactive */
+  --sireen-button-bg: var(--vscode-button-background, #0e639c);
+  --sireen-button-fg: var(--vscode-button-foreground, #ffffff);
+  --sireen-button-hover-bg: var(--vscode-button-hoverBackground, #1177bb);
+  --sireen-button-secondary-bg: var(--vscode-button-secondaryBackground, #3a3d41);
+  --sireen-button-secondary-fg: var(--vscode-button-secondaryForeground, #ffffff);
+  --sireen-button-border: var(--vscode-button-border, transparent);
+  --sireen-button-separator: var(--vscode-button-border, rgba(255, 255, 255, 0.4));
+
+  /* Inputs */
+  --sireen-input-bg: var(--vscode-input-background, #3c3c3c);
+  --sireen-input-fg: var(--vscode-input-foreground, #cccccc);
+  --sireen-input-border: var(--vscode-input-border, #3c3c3c);
+  --sireen-input-placeholder: var(--vscode-input-placeholderForeground, rgba(204, 204, 204, 0.5));
+  --sireen-input-focus-border: var(--vscode-inputOption-activeBorder, #007fd4);
+
+  /* Links */
+  --sireen-link-fg: var(--vscode-textLink-foreground, #3794ff);
+  --sireen-link-active-fg: var(--vscode-textLink-activeForeground, #3794ff);
+
+  /* Scrollbar */
+  --sireen-scrollbar-thumb: var(--vscode-scrollbarSlider-background, rgba(121, 121, 121, 0.4));
+  --sireen-scrollbar-thumb-hover: var(--vscode-scrollbarSlider-hoverBackground, rgba(100, 100, 100, 0.7));
+  --sireen-scrollbar-thumb-active: var(--vscode-scrollbarSlider-activeBackground, rgba(191, 191, 191, 0.4));
+
+  /* Focus ring */
+  --sireen-focus-border: var(--vscode-focusBorder, #007fd4);
+
+  /* Error / warning / success — VS Code semantic */
+  --sireen-error-fg: var(--vscode-errorForeground, #f48771);
+  --sireen-error-bg: var(--vscode-inputValidation-errorBackground, #5a1d1d);
+  --sireen-error-border: var(--vscode-inputValidation-errorBorder, #f48771);
+  --sireen-warning-fg: var(--vscode-editorWarning-foreground, #cca700);
+  --sireen-warning-bg: var(--vscode-inputValidation-warningBackground, #352a05);
+  --sireen-warning-border: var(--vscode-inputValidation-warningBorder, #cca700);
+  --sireen-success-fg: var(--vscode-testing-iconPassed, #73c991);
+  --sireen-success-bg: color-mix(in srgb, var(--vscode-testing-iconPassed, #73c991) 12%, transparent);
+  --sireen-info-fg: var(--vscode-notificationsInfoIcon-foreground, #3794ff);
+  --sireen-info-bg: color-mix(in srgb, var(--vscode-notificationsInfoIcon-foreground, #3794ff) 12%, transparent);
+
+  /* ============================================================
+   * SEVERITY COLORS — semantic, consistent across all themes
+   * Only hardcoded colors permitted in the design system.
+   * ============================================================ */
+  --sireen-severity-critical-fg: #ef4444;
+  --sireen-severity-critical-bg: color-mix(in srgb, #ef4444 15%, transparent);
+  --sireen-severity-critical-border: #ef4444;
+  --sireen-severity-high-fg: #f97316;
+  --sireen-severity-high-bg: color-mix(in srgb, #f97316 15%, transparent);
+  --sireen-severity-high-border: #f97316;
+  --sireen-severity-medium-fg: #eab308;
+  --sireen-severity-medium-bg: color-mix(in srgb, #eab308 15%, transparent);
+  --sireen-severity-medium-border: #eab308;
+  --sireen-severity-low-fg: #3b82f6;
+  --sireen-severity-low-bg: color-mix(in srgb, #3b82f6 15%, transparent);
+  --sireen-severity-low-border: #3b82f6;
+  --sireen-severity-info-fg: #6b7280;
+  --sireen-severity-info-bg: color-mix(in srgb, #6b7280 15%, transparent);
+  --sireen-severity-info-border: #6b7280;
+
+  /* ============================================================
+   * BRAND ACCENTS — used sparingly for highlights only
+   * ============================================================ */
+  --sireen-accent-amber: #f59e0b;
+  --sireen-accent-purple: #a855f7;
+  --sireen-accent-cyan: #06b6d4;
+  --sireen-accent-green: #22c55e;
+  --sireen-accent-red: #ef4444;
+  --sireen-accent-blue: #3b82f6;
+
+  /* ============================================================
+   * SPACING — 4px grid
+   * ============================================================ */
+  --sireen-space-0: 0;
+  --sireen-space-1: 4px;
+  --sireen-space-2: 8px;
+  --sireen-space-3: 12px;
+  --sireen-space-4: 16px;
+  --sireen-space-5: 20px;
+  --sireen-space-6: 24px;
+  --sireen-space-8: 32px;
+  --sireen-space-10: 40px;
+  --sireen-space-12: 48px;
+
+  /* ============================================================
+   * RADIUS — minimal rounding, VS Code aesthetic
+   * ============================================================ */
+  --sireen-radius-sm: 2px;
+  --sireen-radius-md: 4px;
+  --sireen-radius-lg: 6px;
+  --sireen-radius-full: 9999px;
+
+  /* ============================================================
+   * TYPOGRAPHY
+   * ============================================================ */
+  --sireen-font-ui: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --sireen-font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, "Courier New", monospace;
+
+  --sireen-font-size-h1: 16px;
+  --sireen-font-size-h2: 14px;
+  --sireen-font-size-h3: 13px;
+  --sireen-font-size-h4: 12px;
+  --sireen-font-size-body-lg: 13px;
+  --sireen-font-size-body: 12px;
+  --sireen-font-size-body-sm: 11px;
+  --sireen-font-size-code: 12px;
+  --sireen-font-size-code-sm: 11px;
+  --sireen-font-size-caption: 11px;
+  --sireen-font-size-overline: 10px;
+
+  --sireen-font-weight-regular: 400;
+  --sireen-font-weight-medium: 500;
+  --sireen-font-weight-semibold: 600;
+
+  --sireen-line-height-ui: 1.3;
+  --sireen-line-height-body: 1.4;
+  --sireen-line-height-code: 1.6;
+
+  /* ============================================================
+   * ANIMATION — functional only, no decorative motion
+   * ============================================================ */
+  --sireen-duration-fast: 0.15s;
+  --sireen-duration-normal: 0.2s;
+  --sireen-duration-slow: 0.3s;
+  --sireen-duration-spin: 1s;
+  --sireen-ease: ease;
+
+  /* ============================================================
+   * ELEVATION — borders for depth, shadows for overlays only
+   * ============================================================ */
+  --sireen-shadow-overlay: 0 2px 8px rgba(0, 0, 0, 0.25);
+  --sireen-shadow-modal: 0 4px 16px rgba(0, 0, 0, 0.35);
+  --sireen-shadow-tooltip: 0 1px 4px rgba(0, 0, 0, 0.2);
+
+  /* ============================================================
+   * Z-INDEX
+   * ============================================================ */
+  --sireen-z-base: 0;
+  --sireen-z-sticky: 100;
+  --sireen-z-dropdown: 1000;
+  --sireen-z-drawer: 1100;
+  --sireen-z-modal: 1200;
+  --sireen-z-toast: 1300;
+  --sireen-z-tooltip: 1400;
+
+  /* ============================================================
+   * COMPONENT SIZING
+   * ============================================================ */
+  --sireen-control-height-sm: 22px;
+  --sireen-control-height-md: 28px;
+  --sireen-control-height-lg: 32px;
+  --sireen-sidebar-width: 48px;
+  --sireen-icon-size-sm: 14px;
+  --sireen-icon-size-md: 16px;
+  --sireen-icon-size-lg: 18px;
+}
+
+/* ============================================================
+ * REDUCED MOTION — mandatory global support
+ * ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ============================================================
+ * FOCUS VISIBLE — consistent keyboard focus ring
+ * ============================================================ */
+.sireen-focus-visible:focus-visible {
+  outline: 2px solid var(--sireen-focus-border);
+  outline-offset: 2px;
+}
