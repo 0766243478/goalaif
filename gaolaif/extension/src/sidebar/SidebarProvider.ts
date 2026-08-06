@@ -63,6 +63,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       vscode.Uri.joinPath(this.extensionUri, 'dist', 'webview.js')
     );
 
+    // The dist folder URI — used as webpack publicPath for dynamic chunk loading
+    const distUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this.extensionUri, 'dist', '/')
+    );
+
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -73,6 +78,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
   <div id="root"></div>
+  <script>
+    // Set webpack public path so dynamic imports (lazy chunks) resolve correctly
+    window.__webpack_public_path__ = '${distUri}';
+  </script>
   <script src="${scriptUri}"></script>
 </body>
 </html>`;

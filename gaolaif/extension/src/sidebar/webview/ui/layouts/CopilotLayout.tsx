@@ -33,20 +33,23 @@ const viewComponents: Record<string, React.LazyExoticComponent<React.ComponentTy
   attackWorkspace: AttackWorkspace,
 };
 
-class ViewErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
+class ViewErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean; error: Error | null }> {
   constructor(props: { children: ReactNode }) {
     super(props);
-    this.state = { hasError: false };
+    this.state = { hasError: false, error: null };
   }
-  static getDerivedStateFromError() {
-    return { hasError: true };
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error: Error, info: { componentStack: string }) {
+    console.error('[SIREEN] View crashed:', error, info);
   }
   render() {
     if (this.state.hasError) {
       return (
         <div style={{ padding: 'var(--sireen-space-3)' }}>
           <Alert variant="error" title="View failed to render">
-            Check the Developer Tools console for details.
+            {this.state.error?.message || 'Unknown error'}. Check the Developer Tools console for details.
           </Alert>
         </div>
       );

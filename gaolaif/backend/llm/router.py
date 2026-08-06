@@ -10,11 +10,11 @@ import httpx
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 
 MODEL_MAP = {
-    "scanner": "nvidia/llama-nemotron-rerank-vl-1b-v2:free",
-    "attacker": "openrouter/owl-alpha:free",
-    "verifier": "nvidia/nemotron-3-ultra-550b-a55b:free",
-    "judge": "nvidia/nemotron-3.5-content-safety:free",
-    "documenter": "poolside/laguna-xs.2:free",
+    "scanner": "openai/gpt-oss-20b:free",
+    "attacker": "nvidia/nemotron-nano-9b-v2:free",
+    "verifier": "nvidia/nemotron-3.5-content-safety:free",
+    "judge": "nvidia/nemotron-nano-9b-v2:free",
+    "documenter": "cohere/north-mini-code:free",
 }
 
 DEFAULT_TEMPERATURES = {

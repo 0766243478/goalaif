@@ -46,7 +46,7 @@ const webviewConfig = {
   output: {
     path: path.resolve(__dirname, 'dist'),
     filename: 'webview.js',
-    publicPath: './',
+    publicPath: 'auto',
     devtoolModuleFilenameTemplate: '../[resource-path]',
   },
   devtool: 'source-map',

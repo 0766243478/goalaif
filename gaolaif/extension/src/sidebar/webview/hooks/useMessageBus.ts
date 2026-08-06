@@ -1,7 +1,7 @@
 import { useEffect, useCallback, useState } from 'react';
 import { vscode } from '../vscodeApi';
 import { useStore } from '../store';
-import type { ChatMessage, ThinkingStep, ExploitRecord, MemoryEntry, ProactiveSuggestion, LogEntry, ProtocolState, PipelineStage, ViewId } from '../store/types';
+import type { ChatMessage, ThinkingStep, ExploitRecord, MemoryEntry, ProtocolState, PipelineStage, ViewId } from '../store/types';
 
 export function useMessageBus() {
   const { dispatch } = useStore();
@@ -138,10 +138,6 @@ export function useMessageBus() {
         case 'sireen.chat.message':
           dispatch({ type: 'ADD_CHAT_MESSAGE', message: msg.payload as ChatMessage });
           dispatch({ type: 'SET_THINKING', thinking: false });
-          break;
-
-        case 'sireen.chat.proactive':
-          dispatch({ type: 'ADD_SUGGESTION', suggestion: msg.payload as ProactiveSuggestion });
           break;
 
         case 'sireen.thinking.start':
@@ -284,16 +280,8 @@ export function useMessageBus() {
           });
           break;
 
-        case 'sireen.sandbox.status':
-          dispatch({ type: 'SET_SANDBOX', ready: msg.payload.ready });
-          break;
-
         case 'sireen.sandbox.started':
           dispatch({ type: 'SET_SANDBOX', ready: true });
-          break;
-
-        case 'sireen.sandbox.log':
-          dispatch({ type: 'ADD_SIM_LOG', entry: msg.payload as LogEntry });
           break;
 
         case 'sireen.patch.result':

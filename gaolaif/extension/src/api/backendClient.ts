@@ -58,7 +58,7 @@ export class BackendClient extends EventEmitter {
 
   async startBackend(): Promise<void> {
     try {
-      const resp = await fetch(`http://localhost:${this.port}/health`);
+      const resp = await fetch(`http://127.0.0.1:${this.port}/health`);
       if (resp.ok) {
         this._connected = true;
         this.setConnectionState('connected');
@@ -82,7 +82,7 @@ export class BackendClient extends EventEmitter {
   private async waitForBackend(maxAttempts = 30): Promise<void> {
     for (let i = 0; i < maxAttempts; i++) {
       try {
-        const resp = await fetch(`http://localhost:${this.port}/health`);
+        const resp = await fetch(`http://127.0.0.1:${this.port}/health`);
         if (resp.ok) return;
       } catch { /* not ready */ }
       await new Promise(r => setTimeout(r, 500));
@@ -94,7 +94,7 @@ export class BackendClient extends EventEmitter {
     if (this.isShuttingDown) return;
 
     this.setConnectionState('connecting');
-    this.ws = new WebSocket(`ws://localhost:${this.port}/ws`);
+    this.ws = new WebSocket(`ws://127.0.0.1:${this.port}/ws`);
 
     this.ws.on('open', () => {
       this._connected = true;
@@ -159,7 +159,7 @@ export class BackendClient extends EventEmitter {
   }
 
   async post(endpoint: string, body: object): Promise<any> {
-    const resp = await fetch(`http://localhost:${this.port}${endpoint}`, {
+    const resp = await fetch(`http://127.0.0.1:${this.port}${endpoint}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -172,7 +172,7 @@ export class BackendClient extends EventEmitter {
   }
 
   async get(endpoint: string): Promise<any> {
-    const resp = await fetch(`http://localhost:${this.port}${endpoint}`);
+    const resp = await fetch(`http://127.0.0.1:${this.port}${endpoint}`);
     if (!resp.ok) throw new Error(`Backend GET ${endpoint} returned ${resp.status}`);
     return resp.json();
   }
