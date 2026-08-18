@@ -177,6 +177,43 @@ export class BackendClient extends EventEmitter {
     return resp.json();
   }
 
+  async patch(endpoint: string, body: object): Promise<any> {
+    const resp = await fetch(`http://127.0.0.1:${this.port}${endpoint}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      const err = await resp.text().catch(() => 'Unknown error');
+      throw new Error(`Backend ${resp.status}: ${err}`);
+    }
+    return resp.json();
+  }
+
+  async delete(endpoint: string): Promise<any> {
+    const resp = await fetch(`http://127.0.0.1:${this.port}${endpoint}`, {
+      method: 'DELETE',
+    });
+    if (!resp.ok) {
+      const err = await resp.text().catch(() => 'Unknown error');
+      throw new Error(`Backend ${resp.status}: ${err}`);
+    }
+    return resp.json();
+  }
+
+  async put(endpoint: string, body: object): Promise<any> {
+    const resp = await fetch(`http://127.0.0.1:${this.port}${endpoint}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      const err = await resp.text().catch(() => 'Unknown error');
+      throw new Error(`Backend ${resp.status}: ${err}`);
+    }
+    return resp.json();
+  }
+
   async analyze(code: string, filePath: string, language: string): Promise<any> {
     return this.post('/analyze', {
       code,

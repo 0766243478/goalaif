@@ -1,6 +1,6 @@
 import { createContext, useContext, useReducer, useEffect, type ReactNode } from 'react';
 import { vscode } from '../vscodeApi';
-import type { SireenState, ViewId, Finding, ChatMessage, ThinkingStep, ChatContext, ExploitRecord, MemoryEntry, ResearchTask, ProactiveSuggestion, LogEntry, PatchResult, ProtocolState, ContractFile, AuditProgress, AuditPhase } from './types';
+import type { SireenState, ViewId, Finding, ChatMessage, ThinkingStep, ChatContext, ExploitRecord, MemoryEntry, ResearchTask, ProactiveSuggestion, LogEntry, PatchResult, ProtocolState, ContractFile, AuditProgress, AuditPhase, SessionMeta, WorkspaceState, TimelineEvent } from './types';
 
 type Action =
   | { type: 'SET_VIEW'; view: ViewId }
@@ -28,7 +28,10 @@ type Action =
   | { type: 'DISMISS_SUGGESTION'; id: string }
   | { type: 'SET_SANDBOX'; ready: boolean }
   | { type: 'ADD_SIM_LOG'; entry: LogEntry }
-  | { type: 'SET_SESSION'; id: string | null }
+  | { type: 'SET_SESSION'; id: string | null; name?: string | null }
+  | { type: 'SET_SESSION_LIST'; sessions: SessionMeta[] }
+  | { type: 'SET_SESSION_VIEW'; view: 'manager' | 'workspace' }
+  | { type: 'RESTORE_WORKSPACE'; state: WorkspaceState }
   | { type: 'SET_PATCH'; result: PatchResult | null }
   | { type: 'SET_RIGHT_PANEL'; open: boolean }
   | { type: 'SET_BOTTOM_PANEL'; open: boolean }
@@ -37,6 +40,7 @@ type Action =
   | { type: 'SET_AUDIT_PROGRESS'; progress: AuditProgress | null }
   | { type: 'SET_AUDIT_PHASE'; phase: AuditPhase }
   | { type: 'SET_CONTRACT_CODE'; code: string; filePath: string }
+  | { type: 'SET_TIMELINE_EVENTS'; events: TimelineEvent[] }
   | { type: 'RESTORE'; state: Partial<SireenState> };
 
 const initialState: SireenState = {
@@ -64,6 +68,9 @@ const initialState: SireenState = {
   simulationLog: [],
   suggestions: [],
   activeSessionId: null,
+  activeSessionName: null,
+  sessionList: [],
+  sessionView: 'manager',
   patchResult: null,
   auditProgress: null,
   auditPhase: 'idle',
@@ -132,7 +139,32 @@ function reducer(state: SireenState, action: Action): SireenState {
     case 'ADD_SIM_LOG':
       return { ...state, simulationLog: [...state.simulationLog, action.entry] };
     case 'SET_SESSION':
-      return { ...state, activeSessionId: action.id };
+      return { ...state, activeSessionId: action.id, activeSessionName: action.name ?? state.activeSessionName };
+    case 'SET_SESSION_LIST':
+      return { ...state, sessionList: action.sessions };
+    case 'SET_SESSION_VIEW':
+      return { ...state, sessionView: action.view };
+    case 'RESTORE_WORKSPACE': {
+      const ws = action.state;
+      return {
+        ...state,
+        findings: (ws.findings as Finding[]) ?? state.findings,
+        exploits: (ws.exploits as ExploitRecord[]) ?? state.exploits,
+        chatMessages: (ws.chatMessages as ChatMessage[]) ?? state.chatMessages,
+        thinkingSteps: (ws.thinkingSteps as ThinkingStep[]) ?? state.thinkingSteps,
+        researchNotes: ws.notes ?? state.researchNotes,
+        tasks: (ws.tasks as ResearchTask[]) ?? state.tasks,
+        protocol: (ws.protocol as ProtocolState | null) ?? state.protocol,
+        contractCode: ws.contractCode ?? state.contractCode,
+        contractFilePath: ws.contractFilePath ?? state.contractFilePath,
+        auditPhase: (ws.auditPhase as AuditPhase) ?? state.auditPhase,
+        auditProgress: (ws.auditProgress as AuditProgress | null) ?? state.auditProgress,
+        activeView: (ws.activeView as ViewId) ?? state.activeView,
+        rightPanelTab: (ws.rightPanelTab as 'chat' | 'reasoning') ?? state.rightPanelTab,
+        rightPanelOpen: ws.rightPanelOpen ?? state.rightPanelOpen,
+        bottomPanelOpen: ws.bottomPanelOpen ?? state.bottomPanelOpen,
+      };
+    }
     case 'SET_PATCH':
       return { ...state, patchResult: action.result };
     case 'SET_RIGHT_PANEL':
@@ -166,6 +198,23 @@ const PERSISTED_KEYS: (keyof SireenState)[] = [
   'tasks',
   'chatMessages',
   'memoryCollection',
+  'activeSessionId',
+  'activeSessionName',
+  'sessionView',
+  'connectionStatus',
+  'apiKeySet',
+  'protocol',
+  'contracts',
+  'findings',
+  'exploits',
+  'thinkingSteps',
+  'sandboxReady',
+  'simulationLog',
+  'suggestions',
+  'auditProgress',
+  'auditPhase',
+  'contractCode',
+  'contractFilePath',
 ];
 
 interface StoreContextValue {
@@ -190,11 +239,33 @@ export function StoreProvider({ children }: { children: ReactNode }): JSX.Elemen
   useEffect(() => {
     const timer = setTimeout(() => {
       try {
-        const toSave: Record<string, unknown> = {};
-        for (const key of PERSISTED_KEYS) {
-          toSave[key] = state[key];
-        }
-        vscode.setState(toSave);
+        // Save full workspace state to backend for persistence across restarts
+        const workspaceState: WorkspaceState = {
+          findings: state.findings,
+          exploits: state.exploits,
+          chatMessages: state.chatMessages,
+          thinkingSteps: state.thinkingSteps,
+          notes: state.researchNotes,
+          tasks: state.tasks,
+          protocol: state.protocol,
+          contractCode: state.contractCode,
+          contractFilePath: state.contractFilePath,
+          activeView: state.activeView,
+          rightPanelTab: state.rightPanelTab,
+          rightPanelOpen: state.rightPanelOpen,
+          bottomPanelOpen: state.bottomPanelOpen,
+          bottomPanelTab: state.bottomPanelTab,
+          findingsFilter: state.findingsFilter,
+          memoryCollection: state.memoryCollection,
+          suggestions: state.suggestions,
+          sandboxReady: state.sandboxReady,
+          simulationLog: state.simulationLog,
+          connectionStatus: state.connectionStatus,
+          apiKeySet: state.apiKeySet,
+          auditProgress: state.auditProgress,
+          auditPhase: state.auditPhase,
+        };
+        vscode.setState(workspaceState);
       } catch { /* ignore */ }
     }, 500);
     return () => clearTimeout(timer);

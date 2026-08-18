@@ -1,5 +1,5 @@
 import { useStore } from '../store';
-import { useMessageBus } from '../hooks/useMessageBus';
+import { useSend } from '../hooks/useMessageBus';
 import { AuditProgressBar } from '../ui/components/AuditProgressBar';
 import { Icon } from '../ui/primitives/Icon';
 import { Text } from '../ui/primitives/Text';
@@ -12,9 +12,78 @@ import { StatCard } from '../ui/components/StatCard';
 import { SeverityBadge } from '../ui/components/SeverityBadge';
 import { Chip } from '../ui/components/Chip';
 
+// Workflow steps — the user always knows WHERE they are in the audit lifecycle
+const WORKFLOW_STEPS = [
+  { id: 'audit', label: 'Audit', icon: 'scan' as const, view: 'overview' },
+  { id: 'findings', label: 'Findings', icon: 'findings' as const, view: 'findings' },
+  { id: 'exploits', label: 'Exploits', icon: 'exploits' as const, view: 'exploits' },
+  { id: 'report', label: 'Report', icon: 'fileText' as const, view: 'exploits' },
+] as const;
+
+function WorkflowGuide() {
+  const { state, dispatch } = useStore();
+  const { send } = useSend();
+
+  // Determine which steps are complete
+  const auditDone = state.auditPhase === 'complete' || state.findings.length > 0;
+  const findingsDone = state.findings.length > 0;
+  const exploitsDone = state.exploits.length > 0;
+  const reportDone = false; // report is generated on-demand, no persistent flag yet
+
+  const steps = [
+    { ...WORKFLOW_STEPS[0], done: auditDone, active: state.auditPhase !== 'idle' && state.auditPhase !== 'complete' },
+    { ...WORKFLOW_STEPS[1], done: findingsDone, active: state.activeView === 'findings' && !findingsDone },
+    { ...WORKFLOW_STEPS[2], done: exploitsDone, active: state.activeView === 'exploits' && !exploitsDone },
+    { ...WORKFLOW_STEPS[3], done: reportDone, active: state.activeView === 'exploits' && exploitsDone },
+  ];
+
+  return (
+    <Flex gap={1} align="center" style={{ marginBottom: 'var(--sireen-space-2)' }}>
+      {steps.map((step, i) => (
+        <Flex key={step.id} gap={1} align="center">
+          <Flex
+            gap={1}
+            align="center"
+            style={{
+              cursor: 'pointer',
+              padding: 'var(--sireen-space-1) var(--sireen-space-2)',
+              borderRadius: 'var(--sireen-radius-md)',
+              background: step.active ? 'var(--sireen-bg-inactive)' : 'transparent',
+              opacity: step.done || step.active ? 1 : 0.5,
+            }}
+            onClick={() => {
+              if (step.id === 'report') {
+                send('sireen.report.generate', { session_id: state.activeSessionId });
+              } else {
+                dispatch({ type: 'SET_VIEW', view: step.view as any });
+              }
+            }}
+          >
+            <Icon
+              name={step.done ? 'checkCircle' : step.icon}
+              size="sm"
+              color={step.done ? 'var(--sireen-success-fg)' : step.active ? 'var(--sireen-accent-amber)' : 'var(--sireen-fg-muted)'}
+            />
+            <Text
+              variant="caption"
+              weight={step.active ? 'semibold' : 'regular'}
+              color={step.done ? 'secondary' : step.active ? 'primary' : 'muted'}
+            >
+              {step.label}
+            </Text>
+          </Flex>
+          {i < steps.length - 1 && (
+            <Icon name="chevronRight" size="sm" color="var(--sireen-fg-muted)" />
+          )}
+        </Flex>
+      ))}
+    </Flex>
+  );
+}
+
 export default function OverviewView() {
   const { state, dispatch } = useStore();
-  const { send } = useMessageBus();
+  const { send } = useSend();
 
   const critCount = state.findings.filter(f => f.severity === 'CRITICAL').length;
   const highCount = state.findings.filter(f => f.severity === 'HIGH').length;
@@ -24,6 +93,7 @@ export default function OverviewView() {
 
   return (
     <Stack gap={4}>
+      <WorkflowGuide />
       {state.protocol && (
         <Flex align="center" gap={3}>
           <div
@@ -60,6 +130,8 @@ export default function OverviewView() {
           </Text>
         </Stack>
       )}
+
+      <WorkflowGuide />
 
       <AuditProgressBar />
 
@@ -101,7 +173,7 @@ export default function OverviewView() {
           >
             Full Audit
           </Button>
-          <Button variant="secondary" iconLeft="chat" onClick={() => dispatch({ type: 'SET_VIEW', view: 'chat' })} style={{ flex: 1 }}>
+          <Button variant="secondary" iconLeft="chat" onClick={() => { dispatch({ type: 'SET_RIGHT_PANEL', open: true }); dispatch({ type: 'SET_RIGHT_PANEL_TAB', tab: 'chat' }); }} style={{ flex: 1 }}>
             Chat
           </Button>
           <Button variant="secondary" iconLeft="findings" onClick={() => dispatch({ type: 'SET_VIEW', view: 'findings' })} style={{ flex: 1 }}>

@@ -1,10 +1,45 @@
+import type { ReactNode } from 'react';
+
 export type ViewId =
-  | 'overview' | 'contracts' | 'attackSurface' | 'findings'
+  | 'sessionManager' | 'overview' | 'findings'
   | 'memory' | 'notes' | 'tasks'
-  | 'chat' | 'exploits' | 'simulation' | 'settings'
-  | 'attackWorkspace';
+  | 'exploits' | 'simulation' | 'settings';
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
+
+export interface SessionMeta {
+  id: string;
+  name: string;
+  project: string;
+  repository: string;
+  status: 'active' | 'archived' | 'deleted';
+  audit_status: string;
+  file_path: string;
+  file_name: string;
+  language: string;
+  created_at: number;
+  updated_at: number;
+  findings_count?: number;
+}
+
+export interface WorkspaceState {
+  findings?: unknown[];
+  exploits?: unknown[];
+  chatMessages?: unknown[];
+  thinkingSteps?: unknown[];
+  notes?: string;
+  tasks?: unknown[];
+  protocol?: unknown;
+  contractCode?: string;
+  contractFilePath?: string;
+  auditPhase?: string;
+  auditProgress?: unknown;
+  activeView?: ViewId;
+  rightPanelTab?: string;
+  rightPanelOpen?: boolean;
+  bottomPanelOpen?: boolean;
+  [key: string]: unknown;
+}
 
 export interface ProtocolState {
   name: string;
@@ -112,6 +147,14 @@ export interface LogEntry {
   message: string;
 }
 
+export interface TimelineEvent {
+  id: string;
+  title: ReactNode;
+  description?: ReactNode;
+  timestamp?: number;
+  status?: 'pending' | 'active' | 'completed' | 'error';
+}
+
 export interface PatchResult {
   finding_title: string;
   severity: string;
@@ -122,7 +165,7 @@ export interface PatchResult {
   success: boolean;
 }
 
-export type AuditPhase = 'idle' | 'phase1' | 'phase2' | 'phase3' | 'phase4' | 'complete' | 'error';
+export type AuditPhase = 'idle' | 'phase1' | 'phase2' | 'phase3' | 'phase4' | 'complete' | 'error' | 'incomplete';
 export type PipelineStage = 'idle' | 'understanding' | 'scenarios' | 'compiling' | 'auto_fixing' | 'running_forge' | 'verifying' | 'judging' | 'complete' | 'error';
 
 export interface AuditProgress {
@@ -159,6 +202,9 @@ export interface SireenState {
   simulationLog: LogEntry[];
   suggestions: ProactiveSuggestion[];
   activeSessionId: string | null;
+  activeSessionName: string | null;
+  sessionList: SessionMeta[];
+  sessionView: 'manager' | 'workspace';
   patchResult: PatchResult | null;
   auditProgress: AuditProgress | null;
   auditPhase: AuditPhase;

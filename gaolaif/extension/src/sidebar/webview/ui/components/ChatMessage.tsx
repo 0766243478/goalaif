@@ -1,6 +1,6 @@
 import { memo } from 'react';
 import type { ChatMessage as ChatMessageType, SuggestedAction, ViewId } from '../../store/types';
-import { useMessageBus } from '../../hooks/useMessageBus';
+import { useSend } from '../../hooks/useMessageBus';
 import { useStore } from '../../store';
 import { Text } from '../primitives/Text';
 import { Flex } from '../primitives/Flex';
@@ -31,7 +31,7 @@ const ROLE_BG: Record<ChatMessageType['role'], string> = {
 };
 
 function ChatMessageImpl({ message }: Props) {
-  const { send } = useMessageBus();
+  const { send } = useSend();
   const { dispatch } = useStore();
   const isUser = message.role === 'user';
 

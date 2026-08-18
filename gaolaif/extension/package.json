@@ -99,10 +99,6 @@
         "title": "Sireen: Start Sandbox"
       },
       {
-        "command": "gaolaif.generateReport",
-        "title": "Sireen: Generate Bug Bounty Report"
-      },
-      {
         "command": "gaolaif.executePoC",
         "title": "Sireen: Execute PoC"
       },

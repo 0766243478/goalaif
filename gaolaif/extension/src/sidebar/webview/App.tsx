@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { StoreProvider, useStore } from './store';
 import { CopilotLayout } from './ui/layouts/CopilotLayout';
 import { ToastProvider } from './ui/components/Toast';
-import { useMessageBus } from './hooks/useMessageBus';
+import { useMessageBus, useSend } from './hooks/useMessageBus';
 import { Text } from './ui/primitives/Text';
 import { Stack } from './ui/primitives/Stack';
 import { Input } from './ui/components/Input';
@@ -18,6 +18,7 @@ function AppContent() {
   useEffect(() => {
     send('sireen.apiKey.status', {});
     send('sireen.media.request', {});
+    send('sireen.session.list', { status: 'active' });
   }, [send]);
 
   if (state.apiKeySet === false) {
@@ -38,7 +39,7 @@ function ApiKeySetup({ iconUri }: { iconUri: string }) {
   const [msg, setMsg] = useState('');
   const [sending, setSending] = useState(false);
   const { dispatch } = useStore();
-  const { send } = useMessageBus();
+  const { send } = useSend();
   
   const submit = () => {
     if (key.length < 20) {

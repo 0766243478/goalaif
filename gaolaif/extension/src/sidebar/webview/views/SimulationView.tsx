@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useStore } from '../store';
-import { useMessageBus } from '../hooks/useMessageBus';
+import { useSend } from '../hooks/useMessageBus';
 import { Text } from '../ui/primitives/Text';
 import { Flex } from '../ui/primitives/Flex';
 import { Stack } from '../ui/primitives/Stack';
@@ -14,7 +14,7 @@ import type { TerminalLineType } from '../ui/components/Terminal';
 
 export default function SimulationView() {
   const { state } = useStore();
-  const { send } = useMessageBus();
+  const { send } = useSend();
   const [forkUrl, setForkUrl] = useState('https://eth.llamarpc.com');
 
   const lines = state.simulationLog.map((entry, i) => ({

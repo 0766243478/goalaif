@@ -1,21 +1,86 @@
-import { useEffect, useCallback, useState } from 'react';
+import { useEffect, useCallback, useState, useRef } from 'react';
 import { vscode } from '../vscodeApi';
 import { useStore } from '../store';
-import type { ChatMessage, ThinkingStep, ExploitRecord, MemoryEntry, ProtocolState, PipelineStage, ViewId } from '../store/types';
+import type { ChatMessage, ThinkingStep, ExploitRecord, MemoryEntry, ProtocolState, PipelineStage, ViewId, TimelineEvent } from '../store/types';
 
+/**
+ * Shared icon URI state. Lifted to a module-level singleton so that only the
+ * single message-listener owner (useMessageBus) ever mutates it, while any
+ * number of consumers can read it via useSend without registering listeners.
+ */
+const iconUriStore: { value: string; listeners: Set<(v: string) => void> } = {
+  value: '',
+  listeners: new Set(),
+};
+
+function setIconUriGlobal(value: string) {
+  if (iconUriStore.value === value) return;
+  iconUriStore.value = value;
+  for (const l of iconUriStore.listeners) l(value);
+}
+
+/**
+ * useSend — lightweight hook that returns only the `send` (postMessage) callback
+ * and the current `iconUri`. It registers NO window message listener.
+ *
+ * Use this in any component that only needs to *post* messages to the host.
+ * This prevents the duplicate-listener bug where every component calling
+ * useMessageBus() registered its own `window.addEventListener('message')`,
+ * causing every backend message to be processed N times (duplicate AI replies,
+ * duplicate findings, duplicate state updates).
+ */
+export function useSend() {
+  const [iconUri, setIconUri] = useState<string>(iconUriStore.value);
+
+  useEffect(() => {
+    const listener = (v: string) => setIconUri(v);
+    iconUriStore.listeners.add(listener);
+    // The initial useState() already captured the value at mount; the listener
+    // covers all subsequent updates. No synchronous setState needed here.
+    return () => {
+      iconUriStore.listeners.delete(listener);
+    };
+  }, []);
+
+  const send = useCallback((command: string, payload?: Record<string, unknown>) => {
+    vscode.postMessage({ command, payload });
+  }, []);
+
+  return { send, iconUri };
+}
+
+/**
+ * useMessageBus — the SINGLE owner of the window 'message' listener.
+ *
+ * Mount this EXACTLY ONCE, at the app root (AppContent in App.tsx). It wires
+ * every inbound host message to the store reducer. Leaf components must use
+ * useSend() instead — never useMessageBus().
+ */
 export function useMessageBus() {
   const { dispatch } = useStore();
-  const [iconUri, setIconUri] = useState<string>('');
+  const [iconUri, setIconUri] = useState<string>(iconUriStore.value);
+  const dispatchRef = useRef(dispatch);
+
+  // Keep the ref current without mutating it during render.
+  useEffect(() => {
+    dispatchRef.current = dispatch;
+  }, [dispatch]);
 
   useEffect(() => {
     const handler = (event: MessageEvent) => {
       const msg = event.data;
       if (!msg?.command) return;
+      // Snapshot the dispatch fn so the listener never needs to re-register
+      // when dispatch identity changes (keeps the listener stable = no dupes).
+      const dispatch = dispatchRef.current;
 
       switch (msg.command) {
-        case 'sireen.media.config':
-          setIconUri((msg.payload?.iconUri as string) || '');
+        case 'sireen.media.config': {
+          const uri = (msg.payload?.iconUri as string) || '';
+          setIconUriGlobal(uri);
+          setIconUri(uri);
           break;
+        }
 
         case 'sireen.connection.status':
           dispatch({ type: 'SET_CONNECTION', status: msg.payload.status });
@@ -25,8 +90,9 @@ export function useMessageBus() {
           dispatch({ type: 'SET_API_KEY', set: msg.payload.configured });
           break;
 
-        case 'sireen.audit.started':
-          dispatch({ type: 'SET_SESSION', id: msg.payload.sessionId });
+        case 'sireen.audit.started': {
+          const sessionId = (msg.payload?.session_id as string) || msg.payload?.sessionId;
+          dispatch({ type: 'SET_SESSION', id: sessionId, name: msg.payload?.name });
           dispatch({ type: 'SET_AUDIT_PHASE', phase: 'phase1' });
           dispatch({
             type: 'SET_AUDIT_PROGRESS',
@@ -40,6 +106,7 @@ export function useMessageBus() {
             },
           });
           break;
+        }
 
         case 'sireen.audit.progress':
           dispatch({
@@ -119,6 +186,25 @@ export function useMessageBus() {
           dispatch({ type: 'SET_AUDIT_PROGRESS', progress: null });
           if (msg.payload.findings) {
             dispatch({ type: 'ADD_FINDINGS', findings: msg.payload.findings });
+            // The user just ran an audit — take them straight to the findings
+            // (RULE 4: one step, not "wait → read chat → click View Findings").
+            // Keep the chat open so the AI summary stays visible.
+            dispatch({ type: 'SET_VIEW', view: 'findings' });
+            dispatch({ type: 'SET_RIGHT_PANEL', open: true });
+            dispatch({ type: 'SET_RIGHT_PANEL_TAB', tab: 'chat' });
+          } else {
+            // Zero-finding rule: Never fabricate success. If audit completes
+            // with no findings, show AUDIT_INCOMPLETE status.
+            dispatch({ type: 'SET_AUDIT_PHASE', phase: 'incomplete' });
+            dispatch({
+              type: 'ADD_CHAT_MESSAGE',
+              message: {
+                id: crypto.randomUUID(),
+                role: 'system',
+                content: 'Audit completed but no findings were produced. The code may be secure, or the analysis may need adjustment.',
+                timestamp: Date.now(),
+              },
+            });
           }
           dispatch({
             type: 'ADD_CHAT_MESSAGE',
@@ -131,6 +217,19 @@ export function useMessageBus() {
                 { id: 'view-findings', label: 'View Findings', command: 'sireen.navigate', args: { view: 'findings' } },
                 { id: 'generate-report', label: 'Generate Report', command: 'sireen.report.generate' },
               ],
+            },
+          });
+          break;
+
+        case 'sireen.audit.incomplete':
+          dispatch({ type: 'SET_AUDIT_PHASE', phase: 'incomplete' });
+          dispatch({
+            type: 'ADD_CHAT_MESSAGE',
+            message: {
+              id: crypto.randomUUID(),
+              role: 'system',
+              content: msg.payload?.reason || 'Audit completed with no findings produced.',
+              timestamp: Date.now(),
             },
           });
           break;
@@ -187,11 +286,38 @@ export function useMessageBus() {
             },
           });
           dispatch({ type: 'SET_CONTRACT_CODE', code: (msg.code as string) || '', filePath: (msg.filePath as string) || '' });
-          dispatch({ type: 'SET_VIEW', view: 'attackWorkspace' });
+          dispatch({ type: 'SET_VIEW', view: 'exploits' });
+          dispatch({ type: 'SET_RIGHT_PANEL', open: true });
+          dispatch({ type: 'SET_RIGHT_PANEL_TAB', tab: 'chat' });
+          break;
+
+        case 'sireen.session.created':
+        case 'sireen.session.restored':
+          dispatch({
+            type: 'SET_SESSION',
+            id: msg.payload.session_id,
+            name: msg.payload.name,
+          });
+          break;
+
+        case 'sireen.session.switched':
+          dispatch({
+            type: 'SET_SESSION',
+            id: msg.payload.session_id,
+            name: msg.payload.name,
+          });
+          break;
+
+        case 'sireen.session.list':
+          dispatch({ type: 'SET_SESSION_LIST', sessions: msg.payload.sessions });
           break;
 
         case 'sireen.exploit.started':
-          dispatch({ type: 'SET_SESSION', id: msg.payload.sessionId });
+          dispatch({ type: 'SET_SESSION', id: msg.payload?.session_id || msg.payload?.sessionId });
+          // Keep the chat visible so the user can follow AI progress, and make
+          // sure the right panel is open (RULE 3: always know what's happening).
+          dispatch({ type: 'SET_RIGHT_PANEL', open: true });
+          dispatch({ type: 'SET_RIGHT_PANEL_TAB', tab: 'chat' });
           dispatch({
             type: 'ADD_CHAT_MESSAGE',
             message: {
@@ -219,6 +345,10 @@ export function useMessageBus() {
               createdAt: Date.now(),
             } as ExploitRecord,
           });
+          // Send the user to where the result lives (RULE 3/4): the Exploits
+          // view. They just triggered "Exploit" from a finding — the next step
+          // is to inspect the PoC, not to wonder where it went.
+          dispatch({ type: 'SET_VIEW', view: 'exploits' });
           dispatch({
             type: 'ADD_CHAT_MESSAGE',
             message: {
@@ -260,6 +390,11 @@ export function useMessageBus() {
               },
             },
           });
+          // Also set contractCode so ExploitsView's exploit-idea input has
+          // the target code available without a separate exploitReady message.
+          if (code) {
+            dispatch({ type: 'SET_CONTRACT_CODE', code, filePath: (ctx.file as string) || '' });
+          }
           break;
         }
 
@@ -274,7 +409,7 @@ export function useMessageBus() {
               timestamp: Date.now(),
               suggestions: [
                 { id: 'full-audit', label: 'Run Full Audit', command: 'sireen.audit.request' },
-                { id: 'show-attack', label: 'Show Attack Surface', command: 'sireen.navigate', args: { view: 'attackSurface' } },
+                { id: 'show-findings', label: 'View Findings', command: 'sireen.navigate', args: { view: 'findings' } },
               ],
             },
           });
@@ -315,6 +450,97 @@ export function useMessageBus() {
           dispatch({ type: 'SET_VIEW', view: (msg.payload?.view as ViewId) || 'overview' });
           break;
 
+        case 'sireen.setRightPanel': {
+          const p = msg.payload as Record<string, unknown> | undefined;
+          if (p?.open !== undefined) dispatch({ type: 'SET_RIGHT_PANEL', open: !!p.open });
+          if (p?.tab === 'chat' || p?.tab === 'reasoning') dispatch({ type: 'SET_RIGHT_PANEL_TAB', tab: p.tab });
+          break;
+        }
+
+        case 'sireen.session.created':
+        case 'sireen.session.duplicated':
+        case 'sireen.session.restored':
+          dispatch({
+            type: 'SET_SESSION',
+            id: msg.payload?.session_id || msg.payload?.id,
+            name: msg.payload?.name,
+          });
+          dispatch({ type: 'SET_SESSION_VIEW', view: 'workspace' });
+          dispatch({ type: 'SET_VIEW', view: 'overview' });
+          // Refresh the session list
+          vscode.postMessage({ command: 'sireen.session.list', payload: { status: 'active' } });
+          break;
+
+        case 'sireen.session.switched':
+          dispatch({
+            type: 'SET_SESSION',
+            id: msg.payload?.session_id,
+            name: msg.payload?.name,
+          });
+          vscode.postMessage({ command: 'sireen.session.list', payload: { status: 'active' } });
+          break;
+
+        case 'sireen.session.list':
+        case 'sireen.session.listed': {
+          const sessions = (msg.payload?.sessions || []) as Record<string, unknown>[];
+          dispatch({ type: 'SET_SESSION_LIST', sessions: sessions as any });
+          break;
+        }
+
+        case 'sireen.session.deleted':
+          // Refresh the session list after deletion
+          vscode.postMessage({ command: 'sireen.session.list', payload: { status: 'active' } });
+          break;
+
+        case 'sireen.session.update': {
+          // Update session-specific state
+          if (msg.payload?.audit_phase) {
+            dispatch({ type: 'SET_AUDIT_PHASE', phase: msg.payload.audit_phase as any });
+          }
+          if (msg.payload?.audit_progress) {
+            dispatch({ type: 'SET_AUDIT_PROGRESS', progress: msg.payload.audit_progress });
+          }
+          break;
+        }
+
+        case 'sireen.session.listed': {
+          const sessions = (msg.payload?.sessions || []) as Record<string, unknown>[];
+          dispatch({ type: 'SET_SESSION_LIST', sessions: sessions as any });
+          break;
+        }
+
+        case 'sireen.session.loaded': {
+          const s = msg.payload as Record<string, unknown>;
+          dispatch({ type: 'SET_SESSION', id: s.id as string, name: s.name as string });
+          dispatch({ type: 'SET_SESSION_VIEW', view: 'workspace' });
+          // Restore the full workspace state from SQLite
+          const ws = s.workspace_state as Record<string, unknown> | undefined;
+          if (ws && Object.keys(ws).length > 0) {
+            dispatch({ type: 'RESTORE_WORKSPACE', state: ws as any });
+          } else {
+            dispatch({ type: 'SET_VIEW', view: 'overview' });
+          }
+          break;
+        }
+
+        case 'sireen.session.updated':
+        case 'sireen.session.deleted':
+        case 'sireen.session.workspaceSaved':
+          // Refresh the session list after any mutation
+          vscode.postMessage({ command: 'sireen.session.list', payload: { status: 'active' } });
+          break;
+
+        case 'sireen.session.timeline': {
+          const timeline = msg.payload as TimelineEvent[];
+          dispatch({ type: 'SET_TIMELINE_EVENTS', events: timeline });
+        }
+
+        case 'sireen.timeline.event': {
+          const event = msg.payload as TimelineEvent;
+          dispatch({ type: 'SET_TIMELINE_EVENTS', events: [event] });
+          break;
+        }
+
         case 'sireen.error':
           dispatch({ type: 'SET_AUDIT_PHASE', phase: 'error' });
           dispatch({
@@ -332,7 +558,9 @@ export function useMessageBus() {
 
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
-  }, [dispatch]);
+    // Intentionally empty deps: the listener must be registered ONCE for the
+    // lifetime of the app root. dispatch is read via dispatchRef.current.
+  }, []);
 
   const send = useCallback((command: string, payload?: Record<string, unknown>) => {
     vscode.postMessage({ command, payload });

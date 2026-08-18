@@ -1,13 +1,21 @@
-import { memo, Suspense, lazy, useEffect, Component, type ReactNode } from 'react';
+import { memo, Suspense, lazy, useEffect, useCallback, Component, type ReactNode } from 'react';
 import { useStore } from '../../store';
-import { LeftSidebar } from './LeftSidebar';
+import type { ViewId } from '../../store/types';
+import { useSend } from '../../hooks/useMessageBus';
 import { RightPanel } from '../../layouts/RightPanel';
 import { BottomPanel } from '../../layouts/BottomPanel';
 import { Spinner } from '../components/Spinner';
 import { Alert } from '../components/Alert';
+import { Icon } from '../primitives/Icon';
+import type { IconName } from '../primitives/Icon';
+import { Tooltip } from '../components/Tooltip';
+import { Text } from '../primitives/Text';
+import { Flex } from '../primitives/Flex';
+import { Stack } from '../primitives/Stack';
+import { Button } from '../components/Button';
 
+const SessionManagerView = lazy(() => import('../../views/SessionManagerView'));
 const OverviewView = lazy(() => import('../../views/OverviewView'));
-const ChatView = lazy(() => import('../../views/ChatView'));
 const FindingsView = lazy(() => import('../../views/FindingsView'));
 const ExploitsView = lazy(() => import('../../views/ExploitsView'));
 const MemoryView = lazy(() => import('../../views/MemoryView'));
@@ -15,11 +23,10 @@ const ResearchNotesView = lazy(() => import('../../views/ResearchNotesView'));
 const TasksView = lazy(() => import('../../views/TasksView'));
 const SimulationView = lazy(() => import('../../views/SimulationView'));
 const SettingsView = lazy(() => import('../../views/SettingsView'));
-const AttackWorkspace = lazy(() => import('../../HackerMode'));
 
-const viewComponents: Record<string, React.LazyExoticComponent<React.ComponentType<Record<string, unknown>>>> = {
+const viewComponents: Partial<Record<ViewId, React.LazyExoticComponent<React.ComponentType<Record<string, unknown>>>>> = {
+  sessionManager: SessionManagerView,
   overview: OverviewView,
-  chat: ChatView,
   findings: FindingsView,
   exploits: ExploitsView,
   memory: MemoryView,
@@ -27,11 +34,146 @@ const viewComponents: Record<string, React.LazyExoticComponent<React.ComponentTy
   tasks: TasksView,
   simulation: SimulationView,
   settings: SettingsView,
-  contracts: OverviewView,
-  attackSurface: OverviewView,
-  warRoom: OverviewView,
-  attackWorkspace: AttackWorkspace,
 };
+
+interface TabItem {
+  id: ViewId;
+  icon: IconName;
+  label: string;
+  badge?: (state: ReturnType<typeof useStore>['state']) => number;
+}
+
+const tabs: TabItem[] = [
+  { id: 'overview', icon: 'overview', label: 'Overview' },
+  { id: 'findings', icon: 'findings', label: 'Findings', badge: s => s.findings.length },
+  { id: 'exploits', icon: 'exploits', label: 'Exploits', badge: s => s.exploits.length },
+  { id: 'memory', icon: 'memory', label: 'Memory', badge: s => s.memoryEntries.length },
+  { id: 'notes', icon: 'notes', label: 'Notes' },
+  { id: 'tasks', icon: 'tasks', label: 'Tasks', badge: s => s.tasks.filter(t => t.status === 'open').length },
+  { id: 'simulation', icon: 'simulation', label: 'Sandbox' },
+  { id: 'settings', icon: 'settings', label: 'Settings' },
+];
+
+function SessionHeader() {
+  const { state, dispatch } = useStore();
+  const { send } = useSend();
+  const saveWorkspace = useCallback(() => {
+    if (!state.activeSessionId) return;
+    send('sireen.session.saveWorkspace', {
+      id: state.activeSessionId,
+      state: {
+        findings: state.findings,
+        exploits: state.exploits,
+        chatMessages: state.chatMessages,
+        thinkingSteps: state.thinkingSteps,
+        notes: state.researchNotes,
+        tasks: state.tasks,
+        protocol: state.protocol,
+        contractCode: state.contractCode,
+        contractFilePath: state.contractFilePath,
+        auditPhase: state.auditPhase,
+        auditProgress: state.auditProgress,
+        activeView: state.activeView,
+        rightPanelTab: state.rightPanelTab,
+        rightPanelOpen: state.rightPanelOpen,
+        bottomPanelOpen: state.bottomPanelOpen,
+      },
+    });
+  }, [state, send]);
+
+  // Auto-save workspace state every 30 seconds when a session is active
+  useEffect(() => {
+    if (!state.activeSessionId) return;
+    const timer = setInterval(saveWorkspace, 30000);
+    return () => clearInterval(timer);
+  }, [state.activeSessionId, saveWorkspace]);
+
+  if (!state.activeSessionId) return null;
+
+  // Determine the current workflow stage to answer "WHAT SHOULD I DO NEXT?"
+  const auditPhase = state.auditPhase;
+  const hasFindings = state.findings.length > 0;
+  const hasExploits = state.exploits.length > 0;
+  const hasConfirmedExploits = state.exploits.some(e => e.confirmed);
+
+  let nextStep = '';
+  let nextStepAction: (() => void) | null = null;
+  if (auditPhase === 'idle' && !state.contractCode) {
+    nextStep = 'Open a .sol file and right-click → Audit';
+  } else if (auditPhase === 'idle') {
+    nextStep = 'Run Full Audit to start analysis';
+    nextStepAction = () => dispatch({ type: 'SET_VIEW', view: 'overview' });
+  } else if (auditPhase === 'phase1' || auditPhase === 'phase2' || auditPhase === 'phase3' || auditPhase === 'phase4') {
+    nextStep = `Audit running: ${auditPhase}…`;
+  } else if (auditPhase === 'complete' && !hasFindings) {
+    nextStep = 'Audit complete — no findings. Try an exploit hypothesis.';
+    nextStepAction = () => dispatch({ type: 'SET_VIEW', view: 'exploits' });
+  } else if (auditPhase === 'complete' && hasFindings && !hasExploits) {
+    nextStep = 'Review findings, then generate an exploit';
+    nextStepAction = () => dispatch({ type: 'SET_VIEW', view: 'findings' });
+  } else if (hasExploits && !hasConfirmedExploits) {
+    nextStep = 'Exploit not confirmed — try a different hypothesis';
+    nextStepAction = () => dispatch({ type: 'SET_VIEW', view: 'exploits' });
+  } else if (hasConfirmedExploits) {
+    nextStep = 'Exploit confirmed — generate a report';
+    nextStepAction = () => dispatch({ type: 'SET_VIEW', view: 'exploits' });
+  }
+
+  return (
+    <Flex
+      align="center"
+      justify="space-between"
+      style={{
+        padding: 'var(--sireen-space-1) var(--sireen-space-3)',
+        background: 'var(--sireen-bg-elevated)',
+        borderBottom: '1px solid var(--sireen-border-subtle)',
+        flexShrink: 0,
+      }}
+    >
+      <Flex gap={2} align="center">
+        <Icon name="brand" size="sm" />
+        <Text variant="caption" weight="semibold">{state.activeSessionName || 'Session'}</Text>
+        {state.protocol && (
+          <Text variant="caption" color="muted">· {state.protocol.name}</Text>
+        )}
+        {state.findings.length > 0 && (
+          <Text variant="caption" color="muted">· {state.findings.length} findings</Text>
+        )}
+        {state.exploits.length > 0 && (
+          <Text variant="caption" color="muted">· {state.exploits.length} exploits</Text>
+        )}
+      </Flex>
+      <Flex gap={1} align="center">
+        {nextStep && (
+          <Text
+            variant="caption"
+            color="secondary"
+            style={{
+              cursor: nextStepAction ? 'pointer' : 'default',
+              textDecoration: nextStepAction ? 'underline' : 'none',
+            }}
+            onClick={nextStepAction || undefined}
+          >
+            {nextStep}
+          </Text>
+        )}
+        <Button size="sm" variant="ghost" onClick={saveWorkspace} iconLeft="download">Save</Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          iconLeft="layers"
+          onClick={() => {
+            saveWorkspace();
+            dispatch({ type: 'SET_SESSION_VIEW', view: 'manager' });
+            dispatch({ type: 'SET_VIEW', view: 'sessionManager' });
+          }}
+        >
+          Sessions
+        </Button>
+      </Flex>
+    </Flex>
+  );
+}
 
 class ViewErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean; error: Error | null }> {
   constructor(props: { children: ReactNode }) {
@@ -75,9 +217,96 @@ function ViewLoader() {
   );
 }
 
+function TabBar() {
+  const { state, dispatch } = useStore();
+  return (
+    <nav
+      role="tablist"
+      aria-label="Workspace navigation"
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 'var(--sireen-space-1)',
+        padding: '0 var(--sireen-space-2)',
+        height: 'var(--sireen-tabbar-height, 36px)',
+        minHeight: 'var(--sireen-tabbar-height, 36px)',
+        background: 'var(--sireen-bg-secondary)',
+        borderBottom: '1px solid var(--sireen-border-subtle)',
+        overflowX: 'auto',
+        overflowY: 'hidden',
+        flexShrink: 0,
+      }}
+    >
+      {tabs.map(tab => {
+        const isActive = state.activeView === tab.id;
+        const count = tab.badge?.(state);
+        return (
+          <Tooltip key={tab.id} content={tab.label} position="bottom">
+            <button
+              role="tab"
+              aria-selected={isActive}
+              aria-label={tab.label}
+              onClick={() => dispatch({ type: 'SET_VIEW', view: tab.id })}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 'var(--sireen-space-1)',
+                padding: 'var(--sireen-space-1) var(--sireen-space-2)',
+                border: 'none',
+                borderBottom: isActive ? '2px solid var(--sireen-accent-amber)' : '2px solid transparent',
+                background: isActive ? 'var(--sireen-bg-inactive)' : 'transparent',
+                color: isActive ? 'var(--sireen-fg-primary)' : 'var(--sireen-fg-muted)',
+                cursor: 'pointer',
+                borderRadius: 0,
+                whiteSpace: 'nowrap',
+                fontSize: 'var(--sireen-font-size-caption)',
+                fontWeight: isActive ? 'var(--sireen-font-weight-semibold)' : 'var(--sireen-font-weight-regular)',
+                transition: 'background-color var(--sireen-duration-fast) var(--sireen-ease), color var(--sireen-duration-fast) var(--sireen-ease)',
+              }}
+            >
+              <Icon name={tab.icon} size="sm" />
+              {tab.label}
+              {count != null && count > 0 && (
+                <span
+                  style={{
+                    background: 'var(--sireen-severity-critical-fg)',
+                    color: '#fff',
+                    fontSize: 'var(--sireen-font-size-overline)',
+                    fontWeight: 'var(--sireen-font-weight-semibold)',
+                    borderRadius: 'var(--sireen-radius-full)',
+                    padding: '1px var(--sireen-space-1)',
+                    lineHeight: 1,
+                    minWidth: 14,
+                    textAlign: 'center',
+                  }}
+                >
+                  {count > 99 ? '99+' : count}
+                </span>
+              )}
+            </button>
+          </Tooltip>
+        );
+      })}
+      <div style={{ flex: 1 }} />
+      <Tooltip content={state.connectionStatus === 'connected' ? 'Backend connected' : 'Backend disconnected'} position="bottom">
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            color: state.connectionStatus === 'connected' ? 'var(--sireen-success-fg)' : 'var(--sireen-fg-muted)',
+          }}
+        >
+          <Icon name={state.connectionStatus === 'connected' ? 'connected' : 'disconnected'} size="sm" />
+        </div>
+      </Tooltip>
+    </nav>
+  );
+}
+
 function CopilotLayoutImpl() {
   const { state, dispatch } = useStore();
-  const ViewComponent = viewComponents[state.activeView] || OverviewView;
+  const isSessionManager = state.sessionView === 'manager' || !state.activeSessionId;
+  const ViewComponent = isSessionManager ? SessionManagerView : (viewComponents[state.activeView] || OverviewView);
 
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 560px)');
@@ -91,24 +320,28 @@ function CopilotLayoutImpl() {
     <div
       style={{
         display: 'flex',
+        flexDirection: 'column',
         height: '100vh',
         width: '100vw',
         background: 'var(--sireen-bg-primary)',
         overflow: 'hidden',
       }}
     >
-      <LeftSidebar />
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
-        <div style={{ flex: 1, overflow: 'auto', padding: 'var(--sireen-space-3) var(--sireen-space-4)' }}>
-          <Suspense fallback={<ViewLoader />}>
-            <ViewErrorBoundary>
-              <ViewComponent />
-            </ViewErrorBoundary>
-          </Suspense>
+      {!isSessionManager && <SessionHeader />}
+      {!isSessionManager && <TabBar />}
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
+          <div style={{ flex: 1, overflow: 'auto', padding: 'var(--sireen-space-3) var(--sireen-space-4)' }}>
+            <Suspense fallback={<ViewLoader />}>
+              <ViewErrorBoundary>
+                <ViewComponent />
+              </ViewErrorBoundary>
+            </Suspense>
+          </div>
+          {state.bottomPanelOpen && !isSessionManager && <BottomPanel />}
         </div>
-        {state.bottomPanelOpen && <BottomPanel />}
+        {state.rightPanelOpen && !isSessionManager && <RightPanel />}
       </div>
-      {state.rightPanelOpen && <RightPanel />}
     </div>
   );
 }

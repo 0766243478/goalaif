@@ -1,5 +1,5 @@
 import { useStore } from '../store';
-import { useMessageBus } from '../hooks/useMessageBus';
+import { useSend } from '../hooks/useMessageBus';
 import { ChatMessage } from '../ui/components/ChatMessage';
 import { ChatInput } from '../ui/components/ChatInput';
 import { ThinkingIndicator } from '../ui/components/ThinkingIndicator';
@@ -14,7 +14,7 @@ import { EmptyState } from '../ui/components/EmptyState';
 
 export function RightPanel() {
   const { state, dispatch } = useStore();
-  const { send } = useMessageBus();
+  const { send } = useSend();
 
   return (
     <div

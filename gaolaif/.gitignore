@@ -1,2 +1,7 @@
 backend/.env
 backend/.env.local
+backend/sessions.db
+
+# Temp files from development
+extension/src/**/*.bak
+extension/src/**/*.txt

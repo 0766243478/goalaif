@@ -1,6 +1,6 @@
 import { memo } from 'react';
 import type { Finding } from '../store/types';
-import { useMessageBus } from '../hooks/useMessageBus';
+import { useSend } from '../hooks/useMessageBus';
 import { useStore } from '../store';
 
 interface Props {
@@ -16,7 +16,7 @@ const severityConfig = {
 };
 
 function FindingCardInner({ finding, compact }: Props) {
-  const { send } = useMessageBus();
+  const { send } = useSend();
   const { state } = useStore();
   const sev = severityConfig[finding.severity] || severityConfig.LOW;
   const sourceCode = state.contractCode || '';

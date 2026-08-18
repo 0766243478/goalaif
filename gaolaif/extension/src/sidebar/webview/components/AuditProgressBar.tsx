@@ -9,6 +9,7 @@ const PHASE_LABELS: Record<AuditPhase, string> = {
   phase4: 'Phase 4/4',
   complete: 'Complete',
   error: 'Error',
+  incomplete: 'Incomplete',
 };
 
 const STAGE_LABELS: Record<PipelineStage, string> = {

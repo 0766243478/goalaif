@@ -27,9 +27,6 @@ export function registerCommands(
     vscode.commands.registerCommand('gaolaif.runSandbox', () =>
       handleRunSandbox(backendClient)
     ),
-    vscode.commands.registerCommand('gaolaif.generateReport', () =>
-      handleGenerateReport(backendClient)
-    ),
     vscode.commands.registerCommand('gaolaif.executePoC', () => {
       vscode.window.showInformationMessage('Execute PoC: select a generated PoC file first');
     }),
@@ -43,7 +40,11 @@ export function registerCommands(
     vscode.commands.registerCommand('sireen.openChat', () => {
       sidebarProvider.postMessageToWebview({
         command: 'sireen.navigate',
-        payload: { view: 'chat' },
+        payload: { view: 'findings' },
+      });
+      sidebarProvider.postMessageToWebview({
+        command: 'sireen.setRightPanel',
+        payload: { open: true, tab: 'chat' },
       });
     }),
     vscode.commands.registerCommand('sireen.openChatWithContext', (args?: any) => {
@@ -67,7 +68,11 @@ export function registerCommands(
 
       sidebarProvider.postMessageToWebview({
         command: 'sireen.navigate',
-        payload: { view: 'chat' },
+        payload: { view: 'findings' },
+      });
+      sidebarProvider.postMessageToWebview({
+        command: 'sireen.setRightPanel',
+        payload: { open: true, tab: 'chat' },
       });
 
       setTimeout(() => {

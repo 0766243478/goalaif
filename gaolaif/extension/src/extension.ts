@@ -11,6 +11,7 @@ import { SireenCodeActionProvider } from './editor/sireenCodeActions';
 
 let backendClient: BackendClient;
 let diagnostics: SireenDiagnostics;
+let decorator: VulnerabilityDecorator;
 
 export async function activate(context: vscode.ExtensionContext) {
   console.log('[Sireen] Extension activating...');
@@ -24,11 +25,28 @@ export async function activate(context: vscode.ExtensionContext) {
     } as any)
   );
 
+  // Initialize session manager and restore previous sessions
+  await sidebarProvider.getSessionManager().initialize();
+  await sidebarProvider.restoreSession();
+
   const router = new MessageRouter(backendClient, sidebarProvider);
   sidebarProvider.setRouter(router);
 
+  // Editor integration: diagnostics (squiggles) + decorations (line highlights)
   diagnostics = new SireenDiagnostics();
   context.subscriptions.push(diagnostics);
+  decorator = new VulnerabilityDecorator();
+
+  // When audit findings arrive, apply them to the editor
+  router.onFindings((findings) => {
+    diagnostics.updateFindings(findings as any);
+    // Apply decorations to all visible Solidity editors
+    for (const editor of vscode.window.visibleTextEditors) {
+      if (editor.document.languageId === 'solidity') {
+        decorator.applyFindings(editor, findings as any);
+      }
+    }
+  });
 
   const codeLensProvider = new SireenCodeLensProvider();
   context.subscriptions.push(

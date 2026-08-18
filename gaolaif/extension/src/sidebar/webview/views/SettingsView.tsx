@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useStore } from '../store';
-import { useMessageBus } from '../hooks/useMessageBus';
+import { useSend } from '../hooks/useMessageBus';
 import { Text } from '../ui/primitives/Text';
 import { Flex } from '../ui/primitives/Flex';
 import { Stack } from '../ui/primitives/Stack';
@@ -11,7 +11,7 @@ import { Badge } from '../ui/components/Badge';
 
 export default function SettingsView() {
   const { state, dispatch } = useStore();
-  const { send } = useMessageBus();
+  const { send } = useSend();
   const [apiKey, setApiKey] = useState('');
   const [rpcUrl, setRpcUrl] = useState('https://eth.llamarpc.com');
   const [saved, setSaved] = useState(false);

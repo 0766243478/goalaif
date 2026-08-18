@@ -46,6 +46,18 @@ from phases.phase4_judge import phase4_judge
 from memory.smart_memory import SmartMemory
 from firewall.outbound import OutboundFirewall
 from firewall.inbound import InboundFirewall
+from session_store import (
+    init_db as session_init_db,
+    create_session as session_create,
+    get_session as session_get,
+    list_sessions as session_list,
+    update_session as session_update,
+    delete_session as session_delete,
+    duplicate_session as session_duplicate,
+    save_workspace_state as session_save_state,
+    get_timeline as session_get_timeline,
+    add_timeline_event as session_add_timeline,
+)
 
 # Subscription system — optional, degrades gracefully if Supabase not configured
 _SUBSCRIPTION_ENABLED = False
@@ -63,6 +75,7 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app):
+    session_init_db()  # SQLite session store
     asyncio.create_task(asyncio.to_thread(memory.init))
     yield
 
@@ -597,6 +610,16 @@ async def _run_pipeline(
             )
 
         session.status = "complete"
+        # Record timeline event for the persistent session store
+        try:
+            session_add_timeline(
+                session.session_id, "audit_complete",
+                f"Audit complete: {len(findings)} finding(s)",
+                {"findings_count": len(findings),
+                 "confirmed": sum(1 for f in findings if f.confirmed)},
+            )
+        except Exception:
+            pass  # timeline is best-effort, never block the pipeline
         await _broadcast(session.session_id, "complete", {
             "findings": [
                 {
@@ -1235,6 +1258,94 @@ async def list_sessions():
             for s in all_sessions
         ]
     }
+
+
+# ── Session Management (SQLite-backed) ───────────────────────────────────────
+# These endpoints persist the ENTIRE workspace state, not just metadata.
+# A session survives VS Code restart, extension reload, and backend restart.
+
+@app.post("/sessions/create")
+async def sessions_create(body: dict):
+    """Create a new persistent session."""
+    session = session_create(
+        name=body.get("name", ""),
+        project=body.get("project", ""),
+        repository=body.get("repository", ""),
+        file_path=body.get("file_path", ""),
+        file_name=body.get("file_name", ""),
+        language=body.get("language", "solidity"),
+        workspace_state=body.get("workspace_state", {}),
+    )
+    return session
+
+
+@app.get("/sessions/list")
+async def sessions_list(status: str = "active", search: str = "",
+                        sort_by: str = "updated_at", sort_order: str = "desc",
+                        limit: int = 100):
+    """List persistent sessions with search, sort, and filter."""
+    return {"sessions": session_list(status, search, sort_by, sort_order, limit)}
+
+
+@app.get("/sessions/{session_id}")
+async def sessions_get(session_id: str):
+    """Get a single session with full workspace state."""
+    session = session_get(session_id)
+    if not session:
+        return JSONResponse(status_code=404, content={"error": "Session not found"})
+    return session
+
+
+@app.patch("/sessions/{session_id}")
+async def sessions_update(session_id: str, body: dict):
+    """Update session metadata (name, project, repository, status, etc.)."""
+    session = session_update(session_id, body)
+    if not session:
+        return JSONResponse(status_code=404, content={"error": "Session not found"})
+    return session
+
+
+@app.delete("/sessions/{session_id}")
+async def sessions_delete(session_id: str):
+    """Soft-delete a session."""
+    if session_delete(session_id):
+        return {"status": "deleted"}
+    return JSONResponse(status_code=404, content={"error": "Session not found"})
+
+
+@app.post("/sessions/{session_id}/duplicate")
+async def sessions_duplicate(session_id: str, body: dict = {}):
+    """Duplicate a session (copies workspace state, resets audit status)."""
+    session = session_duplicate(session_id, body.get("name", ""))
+    if not session:
+        return JSONResponse(status_code=404, content={"error": "Session not found"})
+    return session
+
+
+@app.put("/sessions/{session_id}/workspace")
+async def sessions_save_workspace(session_id: str, body: dict):
+    """Save the full workspace state for a session."""
+    if session_save_state(session_id, body):
+        return {"status": "saved"}
+    return JSONResponse(status_code=404, content={"error": "Session not found"})
+
+
+@app.get("/sessions/{session_id}/timeline")
+async def sessions_timeline(session_id: str):
+    """Get timeline events for a session."""
+    return {"events": session_get_timeline(session_id)}
+
+
+@app.post("/sessions/{session_id}/timeline")
+async def sessions_add_timeline(session_id: str, body: dict):
+    """Add a timeline event to a session."""
+    session_add_timeline(
+        session_id,
+        body.get("event_type", "custom"),
+        body.get("summary", ""),
+        body.get("metadata", {}),
+    )
+    return {"status": "added"}
 
 
 # ── C-8: Natural language explanation ────────────────────────────────────────

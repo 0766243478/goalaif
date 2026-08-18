@@ -48,7 +48,7 @@ describe('Icon', () => {
 
   it('renders all navigation icon names without error', () => {
     const navIcons = [
-      'overview', 'findings', 'chat', 'attackWorkspace', 'exploits',
+      'overview', 'findings', 'exploits',
       'memory', 'notes', 'tasks', 'simulation', 'settings', 'brand',
     ] as const;
     navIcons.forEach((name) => {

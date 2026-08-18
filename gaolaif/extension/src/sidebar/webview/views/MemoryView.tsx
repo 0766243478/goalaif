@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { useStore } from '../store';
-import { useMessageBus } from '../hooks/useMessageBus';
+import { useSend } from '../hooks/useMessageBus';
 import { Text } from '../ui/primitives/Text';
 import { Flex } from '../ui/primitives/Flex';
 import { Stack } from '../ui/primitives/Stack';
@@ -13,7 +13,7 @@ const COLLECTIONS = ['patterns', 'tactics', 'fixes', 'templates'] as const;
 
 export default function MemoryView() {
   const { state, dispatch } = useStore();
-  const { send } = useMessageBus();
+  const { send } = useSend();
   const [search, setSearch] = useState('');
 
   const filteredEntries = useMemo(() => {

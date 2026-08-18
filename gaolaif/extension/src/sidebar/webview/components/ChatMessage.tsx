@@ -1,5 +1,5 @@
 import type { ChatMessage as ChatMessageType } from '../store/types';
-import { useMessageBus } from '../hooks/useMessageBus';
+import { useSend } from '../hooks/useMessageBus';
 import { useStore } from '../store';
 
 interface Props {
@@ -7,7 +7,7 @@ interface Props {
 }
 
 export function ChatMessage({ message }: Props) {
-  const { send } = useMessageBus();
+  const { send } = useSend();
   const { dispatch } = useStore();
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
