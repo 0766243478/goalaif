@@ -89,5 +89,6 @@ Open Settings (`Ctrl+,`) → Search "Sireen":
 MIT — See [LICENSE](LICENSE) for details.
 
 ---
-
+this not is by my 
+this file have to be updatet in a verey time you eidite or make same changes in the code
 *Built by security researchers, for security researchers.*
