@@ -1,0 +1,27 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self' 'unsafe-eval'; img-src data:;">
+  <title>SIREEN Test</title>
+  <style>
+    body { margin: 0; padding: 20px; font-family: system-ui; background: #0d1117; color: #c9d1d9; }
+    #root { min-height: 100vh; }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <h1>SIREEN Test</h1>
+    <p>If you see this, basic rendering works.</p>
+  </div>
+  <script>
+    console.log('[TEST] Basic script executed');
+    // Try to inject content
+    const root = document.getElementById('root');
+    if (root) {
+      root.innerHTML += '<p style="color:#7ee787">JavaScript is working!</p>';
+      console.log('[TEST] Content injected successfully');
+    }
+  </script>
+</body>
+</html>
