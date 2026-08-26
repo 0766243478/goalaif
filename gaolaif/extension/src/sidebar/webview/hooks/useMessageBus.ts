@@ -19,6 +19,34 @@ function setIconUriGlobal(value: string) {
   for (const l of iconUriStore.listeners) l(value);
 }
 
+function unwrapCanonicalPayload(payload: unknown): unknown {
+  if (
+    payload &&
+    typeof payload === 'object' &&
+    'event_id' in payload &&
+    'type' in payload &&
+    'status' in payload &&
+    'payload' in payload
+  ) {
+    return (payload as { payload: unknown }).payload;
+  }
+  return payload;
+}
+
+const canonicalCommandMap: Record<string, string> = {
+  'sireen.audit_progress': 'sireen.audit.progress',
+  'sireen.audit_complete': 'sireen.audit.complete',
+  'sireen.audit_error': 'sireen.audit.error',
+  'sireen.audit_phase1_complete': 'sireen.audit.phase1_complete',
+  'sireen.audit_phase2_complete': 'sireen.audit.phase2_complete',
+  'sireen.audit_phase3_complete': 'sireen.audit.phase3_complete',
+  'sireen.audit_phase4_complete': 'sireen.audit.phase4_complete',
+  'sireen.chat_message': 'sireen.chat.message',
+  'sireen.thinking_start': 'sireen.thinking.start',
+  'sireen.thinking_step': 'sireen.thinking.step',
+  'sireen.thinking_end': 'sireen.thinking.end',
+};
+
 /**
  * useSend — lightweight hook that returns only the `send` (postMessage) callback
  * and the current `iconUri`. It registers NO window message listener.
@@ -68,8 +96,13 @@ export function useMessageBus() {
 
   useEffect(() => {
     const handler = (event: MessageEvent) => {
-      const msg = event.data;
-      if (!msg?.command) return;
+      const rawMessage = event.data;
+      if (!rawMessage?.command) return;
+      const msg = {
+        ...rawMessage,
+        command: canonicalCommandMap[rawMessage.command] || rawMessage.command,
+        payload: unwrapCanonicalPayload(rawMessage.payload),
+      };
       // Snapshot the dispatch fn so the listener never needs to re-register
       // when dispatch identity changes (keeps the listener stable = no dupes).
       const dispatch = dispatchRef.current;
@@ -87,7 +120,9 @@ export function useMessageBus() {
           break;
 
         case 'sireen.apiKey.status':
-          dispatch({ type: 'SET_API_KEY', set: msg.payload.configured });
+          const configured = !!msg.payload?.configured;
+          console.log('[Sireen] apiKey.status received:', { configured, full: msg });
+          dispatch({ type: 'SET_API_KEY', set: configured });
           break;
 
         case 'sireen.audit.started': {
@@ -181,17 +216,65 @@ export function useMessageBus() {
           dispatch({ type: 'SET_AUDIT_PHASE', phase: 'phase4' });
           break;
 
-        case 'sireen.audit.complete':
-          dispatch({ type: 'SET_AUDIT_PHASE', phase: 'complete' });
+        case 'sireen.audit.complete': {
           dispatch({ type: 'SET_AUDIT_PROGRESS', progress: null });
-          if (msg.payload.findings) {
-            dispatch({ type: 'ADD_FINDINGS', findings: msg.payload.findings });
+          // Core v0.1: truthful terminal state drives the UI phase. Never show
+          // generic success for degraded/unverified/failed outcomes.
+          const terminalState = String(
+            (msg.payload as Record<string, unknown>)?.terminal_state || ''
+          );
+          const evidenceCount = Array.isArray((msg.payload as Record<string, unknown>)?.evidence)
+            ? ((msg.payload as Record<string, unknown>)!.evidence as unknown[]).length
+            : 0;
+          if (terminalState === 'failed') {
+            dispatch({ type: 'SET_AUDIT_PHASE', phase: 'error' });
+            dispatch({
+              type: 'ADD_CHAT_MESSAGE',
+              message: {
+                id: crypto.randomUUID(),
+                role: 'system',
+                content: '✗ AUDIT FAILED — see error details above.',
+                timestamp: Date.now(),
+              },
+            });
+            break;
+          }
+          if (Array.isArray(msg.payload.findings) && msg.payload.findings.length > 0) {
+            // Stamp every finding with the durable audit id so the Evidence
+            // Pack viewer can fetch exactly this audit's verification record.
+            const auditId = String((msg.payload as Record<string, unknown>).audit_id || '');
+            const stampedFindings = msg.payload.findings.map((f: Record<string, unknown>) => ({
+              ...f,
+              audit_id: (f.audit_id as string) || auditId,
+            }));
+            dispatch({ type: 'ADD_FINDINGS', findings: stampedFindings });
             // The user just ran an audit — take them straight to the findings
             // (RULE 4: one step, not "wait → read chat → click View Findings").
             // Keep the chat open so the AI summary stays visible.
             dispatch({ type: 'SET_VIEW', view: 'findings' });
             dispatch({ type: 'SET_RIGHT_PANEL', open: true });
             dispatch({ type: 'SET_RIGHT_PANEL_TAB', tab: 'chat' });
+            dispatch({
+              type: 'SET_AUDIT_PHASE',
+              phase: terminalState === 'confirmed' || terminalState === 'clean_with_coverage'
+                ? 'complete'
+                : 'incomplete',
+            });
+            dispatch({
+              type: 'ADD_CHAT_MESSAGE',
+              message: {
+                id: crypto.randomUUID(),
+                role: 'system',
+                content:
+                  `■ TERMINAL STATE: ${terminalState.toUpperCase()} · ${evidenceCount} evidence pack(s)` +
+                  (terminalState === 'degraded'
+                    ? ' — some results could not be verified by Forge; manual review required.'
+                    : terminalState === 'unverified'
+                      ? ' — verifier coverage insufficient to classify this run as clean.'
+                      : ''),
+                timestamp: Date.now(),
+              },
+            });
           } else {
             // Zero-finding rule: Never fabricate success. If audit completes
             // with no findings, show AUDIT_INCOMPLETE status.
@@ -201,7 +284,11 @@ export function useMessageBus() {
               message: {
                 id: crypto.randomUUID(),
                 role: 'system',
-                content: 'Audit completed but no findings were produced. The code may be secure, or the analysis may need adjustment.',
+                content:
+                  `Audit finished [${terminalState.toUpperCase() || 'UNVERIFIED'}] but no findings were produced.` +
+                  (terminalState === 'clean_with_coverage'
+                    ? ' Every hypothesis was executed by Forge and none reproduced — recorded as CLEAN WITH COVERAGE.'
+                    : ' The code may be secure, or analysis coverage was insufficient.'),
                 timestamp: Date.now(),
               },
             });
@@ -211,15 +298,17 @@ export function useMessageBus() {
             message: {
               id: crypto.randomUUID(),
               role: 'assistant',
-              content: msg.payload.report || `Audit complete. Found ${msg.payload.findings?.length || 0} findings.`,
+              content: msg.payload.report || `Audit finished [${terminalState.toUpperCase()}]. Found ${msg.payload.findings?.length || 0} finding(s), ${evidenceCount} evidence pack(s).`,
               timestamp: Date.now(),
               suggestions: [
                 { id: 'view-findings', label: 'View Findings', command: 'sireen.navigate', args: { view: 'findings' } },
+                { id: 'open-evidence', label: 'Open Evidence Pack', command: 'sireen.evidence.open', args: { audit_id: (msg.payload as Record<string, unknown>)?.audit_id } },
                 { id: 'generate-report', label: 'Generate Report', command: 'sireen.report.generate' },
               ],
             },
           });
           break;
+        }
 
         case 'sireen.audit.incomplete':
           dispatch({ type: 'SET_AUDIT_PHASE', phase: 'incomplete' });
@@ -234,9 +323,47 @@ export function useMessageBus() {
           });
           break;
 
+        case 'sireen.audit.error':
+          dispatch({ type: 'SET_AUDIT_PHASE', phase: 'error' });
+          dispatch({ type: 'SET_VIEW', view: 'findings' });
+          dispatch({
+            type: 'ADD_CHAT_MESSAGE',
+            message: {
+              id: crypto.randomUUID(),
+              role: 'system',
+              content: `✗ AUDIT FAILED: ${(msg.payload as Record<string, unknown>)?.message
+                || (msg.payload as Record<string, unknown>)?.error
+                || 'Audit failed'}`,
+              timestamp: Date.now(),
+            },
+          });
+          break;
+
         case 'sireen.chat.message':
           dispatch({ type: 'ADD_CHAT_MESSAGE', message: msg.payload as ChatMessage });
           dispatch({ type: 'SET_THINKING', thinking: false });
+          break;
+
+        // Core v0.1: router-level errors (e.g., "fetch failed" when the
+        // backend is unreachable) MUST be visible. Previously this command
+        // had no case here and REST failures disappeared silently.
+        case 'sireen.error':
+          dispatch({ type: 'SET_AUDIT_PHASE', phase: 'error' });
+          dispatch({
+            type: 'ADD_CHAT_MESSAGE',
+            message: {
+              id: crypto.randomUUID(),
+              role: 'system',
+              content: `✗ ERROR (${(msg.payload as Record<string, unknown>)?.command || 'request'}): ${(msg.payload as Record<string, unknown>)?.error || 'Unknown error'}. Is the SIREEN backend running? Start it with: uvicorn main:app --port 7432 (see README).`,
+              timestamp: Date.now(),
+            },
+          });
+          break;
+
+        // Core v0.1: structured pipeline stages. Human-readable stage lines
+        // arrive separately via sireen.chat.message (router synthesizes them),
+        // so this case only acknowledges the raw event.
+        case 'sireen.stage':
           break;
 
         case 'sireen.thinking.start':
@@ -291,26 +418,10 @@ export function useMessageBus() {
           dispatch({ type: 'SET_RIGHT_PANEL_TAB', tab: 'chat' });
           break;
 
-        case 'sireen.session.created':
-        case 'sireen.session.restored':
-          dispatch({
-            type: 'SET_SESSION',
-            id: msg.payload.session_id,
-            name: msg.payload.name,
-          });
-          break;
-
-        case 'sireen.session.switched':
-          dispatch({
-            type: 'SET_SESSION',
-            id: msg.payload.session_id,
-            name: msg.payload.name,
-          });
-          break;
-
-        case 'sireen.session.list':
-          dispatch({ type: 'SET_SESSION_LIST', sessions: msg.payload.sessions });
-          break;
+        // NOTE: session lifecycle events (created/restored/switched/list/
+        // listed/deleted) are handled EXACTLY ONCE in the richer block further
+        // below. Do not re-register them here — first-match-wins in a switch
+        // would make the richer handlers dead code (P0-4 regression guard).
 
         case 'sireen.exploit.started':
           dispatch({ type: 'SET_SESSION', id: msg.payload?.session_id || msg.payload?.sessionId });
@@ -533,6 +644,7 @@ export function useMessageBus() {
         case 'sireen.session.timeline': {
           const timeline = msg.payload as TimelineEvent[];
           dispatch({ type: 'SET_TIMELINE_EVENTS', events: timeline });
+          break;
         }
 
         case 'sireen.timeline.event': {
@@ -541,18 +653,6 @@ export function useMessageBus() {
           break;
         }
 
-        case 'sireen.error':
-          dispatch({ type: 'SET_AUDIT_PHASE', phase: 'error' });
-          dispatch({
-            type: 'ADD_CHAT_MESSAGE',
-            message: {
-              id: crypto.randomUUID(),
-              role: 'system',
-              content: `Error: ${msg.payload.error}`,
-              timestamp: Date.now(),
-            },
-          });
-          break;
       }
     };
 

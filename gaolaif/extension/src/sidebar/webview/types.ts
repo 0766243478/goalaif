@@ -91,6 +91,7 @@ export type EventType =
   | 'audit_started'
   | 'audit_progress'
   | 'audit_complete'
+  | 'audit_error'
   | 'audit_phase1_complete'
   | 'audit_phase2_complete'
   | 'audit_phase3_complete'

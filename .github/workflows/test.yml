@@ -27,8 +27,9 @@ jobs:
           cd gaolaif/backend
           python -m pytest tests/ firewall/tests/ -v --tb=short
 
-      - name: Run runtime verification
-        run: python runtime_verification/verify_all.py
+      - name: Run runtime verification (release gate)
+        run: |
+          python runtime_verification/verify_all.py
 
   extension-tests:
     runs-on: ubuntu-latest

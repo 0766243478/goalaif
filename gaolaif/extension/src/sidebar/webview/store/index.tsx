@@ -163,6 +163,9 @@ function reducer(state: SireenState, action: Action): SireenState {
         rightPanelTab: (ws.rightPanelTab as 'chat' | 'reasoning') ?? state.rightPanelTab,
         rightPanelOpen: ws.rightPanelOpen ?? state.rightPanelOpen,
         bottomPanelOpen: ws.bottomPanelOpen ?? state.bottomPanelOpen,
+        // Don't restore apiKeySet from workspace — always check backend at runtime
+        // Handle null explicitly: if workspace saved null, treat as "not configured yet"
+        apiKeySet: ws.apiKeySet !== undefined ? (ws.apiKeySet === null ? false : (ws.apiKeySet as boolean)) : state.apiKeySet,
       };
     }
     case 'SET_PATCH':

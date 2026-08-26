@@ -1,4 +1,4 @@
-import { WorkspaceDiscovery, ProjectKnowledgeGraph } from '../workspace/WorkspaceDiscovery';
+ import { WorkspaceDiscovery, ProjectKnowledgeGraph } from '../workspace/WorkspaceDiscovery';
 import { SharedMemory } from './SharedMemory';
 
 export type AgentType = 

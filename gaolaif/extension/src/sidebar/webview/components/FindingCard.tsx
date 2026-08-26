@@ -94,6 +94,19 @@ function FindingCardInner({ finding, compact }: Props) {
             >
               Exploit
             </button>
+            {finding.audit_id && (
+              <button
+                className="btn-ghost"
+                style={{ fontSize: 'var(--text-xs)', padding: '2px 6px' }}
+                title="Open the full evidence chain: hypothesis → attack path → PoC → Forge verification → observed impact"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  send('sireen.evidence.open', { audit_id: finding.audit_id });
+                }}
+              >
+                Evidence
+              </button>
+            )}
             <button
               className="btn-ghost"
               style={{ fontSize: 'var(--text-xs)', padding: '2px 6px' }}

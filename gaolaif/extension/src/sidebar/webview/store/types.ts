@@ -69,6 +69,8 @@ export interface Finding {
   remediation: string;
   line_number?: number;
   file_path?: string;
+  /** Durable audit id — links the finding to its Evidence Pack. */
+  audit_id?: string;
 }
 
 export interface ChatMessage {

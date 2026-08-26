@@ -2,7 +2,7 @@
   "name": "sireen",
   "displayName": "Sireen -- Web3 Security Workspace",
   "description": "AI-native smart contract security workspace. Protocol protection + Ethical hacking. 100% local.",
-  "version": "1.0.3",
+  "version": "0.1.0",
   "publisher": "Hussein-M",
   "engines": {
     "vscode": "^1.85.0"
@@ -211,6 +211,16 @@
         "gaolaif.backendPort": {
           "type": "number",
           "default": 7432
+        },
+        "gaolaif.backendPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the Sireen FastAPI backend directory (containing main.py). When set, SIREEN will attempt to start the backend automatically."
+        },
+        "gaolaif.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Python interpreter used to launch the Sireen backend. Leave empty to use 'python' from PATH."
         },
         "gaolaif.defaultRpcEvm": {
           "type": "string",

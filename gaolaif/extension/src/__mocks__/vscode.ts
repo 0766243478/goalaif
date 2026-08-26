@@ -12,6 +12,10 @@ export const window = {
   activeTextEditor: undefined,
 };
 
+export const env = {
+  openExternal: jest.fn(),
+};
+
 export const workspace = {
   getConfiguration: jest.fn(() => ({
     get: jest.fn(),
@@ -37,6 +41,9 @@ export class Uri {
   }
   static file(path: string) {
     return { fsPath: path };
+  }
+  static parse(value: string) {
+    return { fsPath: value, toString: () => value };
   }
 }
 

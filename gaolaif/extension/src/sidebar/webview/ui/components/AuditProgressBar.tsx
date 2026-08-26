@@ -36,9 +36,20 @@ export function AuditProgressBar() {
   if (auditPhase === 'idle') return null;
 
   if (auditPhase === 'complete') {
+    // Core v0.1: reached ONLY when backend declared terminal_state =
+    // confirmed | clean_with_coverage. Never claim unverified success.
     return (
-      <Alert variant="success" title={PHASE_LABELS[auditPhase]}>
-        Audit completed successfully
+      <Alert variant="success" title="Finished">
+        Forge-verified result — terminal verdict & evidence in chat
+      </Alert>
+    );
+  }
+
+  if (auditPhase === 'incomplete') {
+    // Core v0.1: UNVERIFIED / DEGRADED outcome — neither success nor error.
+    return (
+      <Alert variant="warning" title="Unverified">
+        Audit finished without full verification — review terminal state & evidence in chat
       </Alert>
     );
   }

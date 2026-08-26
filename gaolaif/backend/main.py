@@ -25,6 +25,9 @@ load_dotenv(".env.local", override=True)
 import asyncio
 import dataclasses
 import json
+import logging
+import re
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -38,6 +41,8 @@ from llm.router import Router
 from models.types import (
     AuditSession, ProtocolMap, AttackScenario,
     SimulationProof, Finding,
+    Hypothesis, AttackPath, VerificationRecord, EvidencePack,
+    TerminalState, VerificationStatus,
 )
 from phases.phase1_understand import phase1_understand
 from phases.phase2_scenarios import phase2_scenarios
@@ -57,6 +62,11 @@ from session_store import (
     save_workspace_state as session_save_state,
     get_timeline as session_get_timeline,
     add_timeline_event as session_add_timeline,
+    save_audit as audit_save,
+    get_audit as audit_get,
+    list_audits as audits_list,
+    save_hypotheses as audit_save_hypotheses,
+    save_evidence as audit_save_evidence,
 )
 
 # Subscription system — optional, degrades gracefully if Supabase not configured
@@ -79,7 +89,7 @@ async def lifespan(app):
     asyncio.create_task(asyncio.to_thread(memory.init))
     yield
 
-app = FastAPI(title="Sireen Backend", version="2.1.0", lifespan=lifespan)
+app = FastAPI(title="Sireen Backend", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -91,6 +101,39 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type", "Authorization"],
 )
+
+# ── S-2: basic resource limits for (accidental) public exposure ──────────────
+# One Solidity file never needs megabytes. These caps bound memory/CPU per
+# request without building authentication (explicitly deferred).
+MAX_BODY_BYTES = 1_000_000      # hard cap on any single JSON request
+MAX_SOURCE_CHARS = 200_000      # generous ceiling for ONE contract file
+
+
+@app.middleware("http")
+async def limit_request_body(request, call_next):
+    """Reject oversized requests early with 413 instead of buffering them."""
+    content_length = request.headers.get("content-length", "")
+    if content_length.isdigit() and int(content_length) > MAX_BODY_BYTES:
+        return JSONResponse(status_code=413, content={"error": "Request body too large"})
+    response = await call_next(request)
+    return response
+
+
+def _reject_oversized_source(source_code: str):
+    """Return a 400 response when source exceeds the single-file cap."""
+    if len(source_code) > MAX_SOURCE_CHARS:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": (
+                    f"Source too large: {len(source_code)} chars "
+                    f"(SIREEN audits one file up to {MAX_SOURCE_CHARS} chars)."
+                )
+            },
+        )
+    return None
+
+logger = logging.getLogger("sireen.main")
 
 router_llm = Router()
 memory = SmartMemory()
@@ -133,7 +176,7 @@ def health():
     return {
         "status": "ok",
         "backend": "sireen",
-        "version": "2.1.0",
+        "version": "0.1.0",
         "models_configured": router_llm.is_configured(),
     }
 
@@ -205,6 +248,10 @@ async def _start_audit(body: dict):
     if not source_code:
         return JSONResponse(status_code=400, content={"error": "No source code provided"})
 
+    oversized = _reject_oversized_source(source_code)
+    if oversized:
+        return oversized
+
     code_to_send = source_code
     anonymization_map = None
     if anonymize:
@@ -224,9 +271,26 @@ async def _start_audit(body: dict):
     if conn_id:
         session_to_conn[session_id] = conn_id
 
-    asyncio.create_task(
+    task = asyncio.create_task(
         _run_pipeline(session, rpc_url, max_scenarios, anonymization_map, rules, machine_id, original_source_code=source_code)
     )
+
+    def _log_pipeline_crash(t: asyncio.Task) -> None:
+        """OBSERVABILITY FIX: a crashed pipeline task previously vanished —
+        no traceback, no durable record, and the audit id silently 404'd."""
+        if t.cancelled():
+            logger.error("audit %s: pipeline task cancelled", session.session_id)
+        elif t.exception() is not None:
+            logger.error(
+                "audit %s: pipeline task crashed: %r",
+                session.session_id, t.exception(),
+                exc_info=t.exception(),
+            )
+            session.status = "error"
+            session.terminal_state = TerminalState.FAILED.value
+            session.warnings.append(f"Pipeline crash: {t.exception()}")
+
+    task.add_done_callback(_log_pipeline_crash)
     return {"session_id": session_id, "status": "started"}
 
 
@@ -254,6 +318,10 @@ async def exploit_start(body: dict):
         return JSONResponse(status_code=400, content={"error": "No source code provided"})
     if not idea.strip():
         return JSONResponse(status_code=400, content={"error": "Exploit idea is required"})
+
+    oversized = _reject_oversized_source(source_code)
+    if oversized:
+        return oversized
 
     code_to_send = source_code
     anonymization_map = None
@@ -415,6 +483,250 @@ def _find_foundry_root(file_path: str) -> Optional[Path]:
 
 
 
+# ── Core v0.1: structured stage emitter ──────────────────────────────────────
+
+STAGE_ORDER = [
+    "input", "discovery", "reasoning", "hypothesis", "attack_path",
+    "poc", "verification", "evidence", "finding", "report",
+]
+
+
+async def _emit_stage(session_id: str, stage: str, status: str, **extra):
+    """Broadcast one structured pipeline-stage event.
+
+    Shape: {"stage": <name>, "status": running|completed|failed|degraded|skipped, ...extra}
+    Never silently swallows errors: failures are emitted as status='failed'.
+    """
+    payload = {"stage": stage, "status": status}
+    payload.update(extra)
+    await _broadcast(session_id, "stage", payload)
+
+
+def _sha256(text: str) -> str:
+    import hashlib
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+_forge_version_cache: Optional[str] = None
+
+
+def _forge_version() -> str:
+    """Best-effort `forge --version` (cached). Empty string when unavailable."""
+    global _forge_version_cache
+    if _forge_version_cache is not None:
+        return _forge_version_cache
+    try:
+        from phases.phase3_simulate import _find_forge
+        import subprocess
+        forge = _find_forge()
+        if not forge:
+            _forge_version_cache = ""
+            return ""
+        res = subprocess.run(
+            [str(forge), "--version"], capture_output=True, text=True, timeout=10,
+        )
+        _forge_version_cache = (res.stdout or "").strip().splitlines()[0] if res.stdout else ""
+    except Exception:
+        _forge_version_cache = ""
+    return _forge_version_cache
+
+
+def _compute_terminal_state(
+    *,
+    pipeline_error: bool,
+    forge_available: bool,
+    confirmed_count: int,
+    needs_review_count: int,
+    hypotheses_count: int,
+    executed_count: int,
+) -> str:
+    """Core v0.1 terminal-state policy. See models.TerminalState docstring."""
+    if pipeline_error:
+        return TerminalState.FAILED.value
+    if not forge_available:
+        # Verifier unavailable ⇒ analysis cannot adjudicate anything.
+        return TerminalState.DEGRADED.value
+    if confirmed_count > 0 and needs_review_count == 0:
+        return TerminalState.CONFIRMED.value
+    if needs_review_count > 0:
+        # HONESTY FIX: any unresolved-for-review finding means the user still
+        # has to triage heuristic claims. Issuing CLEAN_WITH_COVERAGE alongside
+        # `needs_review` findings told the user "clean" and "manual review
+        # required" at the same time (observed on a safe CEI contract).
+        return TerminalState.DEGRADED.value
+    # No confirmations, no unresolved reviews. Coverage gate: every hypothesis
+    # must have received a real executed verification attempt (no skips-only,
+    # none failed-to-run).
+    if hypotheses_count > 0 and executed_count >= hypotheses_count:
+        return TerminalState.CLEAN_WITH_COVERAGE.value
+    return TerminalState.UNVERIFIED.value
+
+
+def _verification_record_from_proof(proof: SimulationProof) -> VerificationRecord:
+    """Build a structured VerificationRecord from a SimulationProof."""
+    er = proof.exploit_result
+    out = proof.forge_output or ""
+    rec = VerificationRecord(verifier="forge", verifier_version=_forge_version())
+    rec.duration_ms = float(proof.test_duration_ms or 0.0)
+
+    if er is not None:
+        rec.compile_status = "passed" if er.compiled else (
+            "failed" if er.verification_status == VerificationStatus.COMPILATION_FAILED else "not_run"
+        )
+        rec.test_status = (
+            "passed" if (er.executed and er.exploit_reproduced)
+            else ("ran" if er.executed else "not_run")
+        )
+        rec.executed_test_count = len(er.forge_tests or [])
+        for t in er.forge_tests or []:
+            if "exploit" in (t.test_name or "").lower():
+                rec.relevant_test_name = t.test_name
+                rec.relevant_test_passed = bool(t.passed)
+                break
+        rec.stdout_excerpt = (er.forge_output or "")[:2000]
+        rec.raw_output_ref = getattr(er, "workspace_path", "") or ""
+        return rec
+
+    # No ExploitResult (infrastructure failure paths) — derive honestly from markers
+    if "[SKIPPED]" in out:
+        rec.compile_status = "not_run"
+        rec.test_status = "not_run"
+    elif "[COMPILATION FAILED" in out:
+        rec.compile_status = "failed"
+        rec.test_status = "not_run"
+    elif "[TIMEOUT]" in out:
+        rec.compile_status = "passed"
+        rec.test_status = "timeout"
+    elif "[ERROR]" in out:
+        rec.compile_status = "not_run"
+        rec.test_status = "error"
+    rec.stdout_excerpt = out[:2000]
+    m = re.search(r"Workspace preserved at: (\S+)", out)
+    if m:
+        rec.raw_output_ref = m.group(1)
+    return rec
+
+
+def _attack_path_from_hypothesis(h: Hypothesis) -> AttackPath:
+    sc = h.scenario
+    transition = ""
+    if sc is not None and h.category == "reentrancy":
+        transition = f"External call inside {h.target}() re-enters attacker before state update"
+    elif h.category == "access_control":
+        transition = f"{h.target}() executes privileged effect without authorization check"
+    else:
+        transition = h.rationale[:200]
+    assertions = []
+    if h.category == "reentrancy":
+        assertions = ["assertLt(address(victim).balance, initial)", "assertGt(address(attacker).balance, deposited)"]
+    elif h.category == "access_control":
+        assertions = ["vm.expectRevert() on unauthorized caller"]
+    return AttackPath(
+        hypothesis_id=h.id,
+        entry_point=h.target,
+        preconditions=list(h.preconditions),
+        attacker_actions=list(h.exploit_steps),
+        vulnerable_transition=transition,
+        expected_impact=h.attack_objective,
+        state_assertions=assertions,
+    )
+
+
+def _reproduction_instructions(pack: EvidencePack) -> str:
+    lines = [
+        "To reproduce independently:",
+        "1. Install Foundry (https://getfoundry.sh).",
+        "2. Create an empty directory; save the analyzed contract as "
+        f"{pack.contract_name or 'Target'}.sol.",
+        "3. Save the PoC below as PoC.t.sol next to it.",
+        '4. Run: forge init --no-commit && forge install foundry-rs/forge-std (or use a mock forge-std/Test.sol).',
+        "5. Run: forge test --match-path '*PoC*'",
+        "6. Observe the assertion results described in this evidence pack.",
+    ]
+    return chr(10).join(lines)
+
+
+def _finding_to_dict(f: Finding) -> dict:
+    return {
+        "id": f.id,
+        "title": f.title,
+        "severity": f.severity,
+        "description": f.description,
+        "confirmed": f.confirmed,
+        "needs_review": f.needs_review,
+        "category": f.category,
+        "remediation": f.remediation,
+        "affected_functions": f.affected_functions,
+        "evidence_id": f.evidence_id,
+    }
+
+
+def _build_json_report(session: AuditSession) -> dict:
+    return {
+        "schema": "sireen.evidence-report/v0.1",
+        "audit_id": session.session_id,
+        "terminal_state": session.terminal_state,
+        "reasoning_mode": session.reasoning_mode,
+        "source_hash": session.source_hash,
+        "target": {"file": session.file_name, "path": session.file_path},
+        "forge_version": _forge_version(),
+        "warnings": list(session.warnings),
+        "discovery": session.discovery_summary,
+        "hypotheses": [dataclasses.asdict(h) | {"scenario": None} for h in session.hypotheses],
+        "findings": [_finding_to_dict(f) for f in session.findings],
+        "evidence_ids": [p.id for p in session.evidence_packs],
+        "started_at": session.started_at,
+        "finished_at": session.finished_at,
+    }
+
+
+def _build_markdown_report(session: AuditSession) -> str:
+    ts = session.terminal_state or "unverified"
+    lines = [
+        "# SIREEN Evidence Report",
+        "",
+        f"- **Audit ID:** `{session.session_id}`",
+        f"- **Terminal state:** **{ts.upper()}**",
+        f"- **Reasoning mode:** {session.reasoning_mode}",
+        f"- **Source hash:** `{session.source_hash[:16]}…`",
+        f"- **Forge:** {_forge_version() or 'unavailable'}",
+        "",
+        "## What ran / did not run",
+    ]
+    disc = session.discovery_summary or {}
+    lines.append(f"- Discovery: {disc.get('functions', 0)} functions, "
+                 f"{disc.get('state_variables', 0)} state variables, "
+                 f"{disc.get('external_calls', 0)} external-call sites "
+                 f"(regex-based, not a full AST)")
+    lines.append(f"- Hypotheses: {len(session.hypotheses)} "
+                 f"({sum(1 for h in session.hypotheses if h.source_mode == 'LLM_ASSISTED')} LLM-assisted)")
+    execd = sum(1 for r in session.verification_records if r.test_status in ("passed", "ran"))
+    lines.append(f"- Verifier executions: {execd}/{len(session.hypotheses)} hypotheses executed by Forge")
+    if session.warnings:
+        lines.append("")
+        lines.append("## Warnings")
+        for w in session.warnings:
+            lines.append(f"- {w}")
+    lines.append("")
+    lines.append("## Findings")
+    if not session.findings:
+        lines.append("_No findings produced._")
+    for i, f in enumerate(session.findings, 1):
+        state = "CONFIRMED" if f.confirmed else ("UNVERIFIED (needs review)" if f.needs_review else "UNVERIFIED")
+        lines.append("")
+        lines.append(f"### Finding #{i:03d} — {f.title} [{state}]")
+        lines.append(f"- Category: {f.category} · Severity estimate: {f.severity or 'n/a'} (heuristic, not authoritative)")
+        lines.append(f"- Evidence pack: `{f.evidence_id or 'n/a'}`")
+        lines.append(f"- Description: {f.description}")
+        if f.remediation:
+            lines.append(f"- Remediation: {f.remediation}")
+    lines.append("")
+    lines.append("## Reproduce")
+    lines.append("Fetch each evidence pack via `GET /audits/" + session.session_id + "`;")
+    lines.append("each pack contains the exact PoC source and step-by-step reproduction instructions.")
+    return chr(10).join(lines)
+
+
 # ── C-7: Async-safe pipeline helpers ─────────────────────────────────────────
 
 async def _call_llm(role: str, system: str, user: str, temperature: float = 0.3, max_tokens: int = 4096):
@@ -436,9 +748,20 @@ async def _run_pipeline(
     machine_id: str = "",
     original_source_code: str = "",
 ):
+    session.started_at = time.time()
+    session.source_hash = _sha256(original_source_code or session.source_code)
+    forge_available = bool(_forge_version())
+    pipeline_error = False
     await _broadcast(session.session_id, "thinking.start", {"agent": "pipeline"})
     try:
+        await _emit_stage(session.session_id, "input", "completed",
+                          audit_id=session.session_id,
+                          file=session.file_name,
+                          source_hash=session.source_hash,
+                          language=session.language)
+
         session.status = "phase1"
+        await _emit_stage(session.session_id, "discovery", "running")
         await _broadcast(session.session_id, "progress", {"phase": 1, "message": "Understanding contract...", "stage": "understanding"})
 
         protocol_map = await phase1_understand(session.source_code, session.file_name, router=router_llm)
@@ -446,6 +769,31 @@ async def _run_pipeline(
 
         # M-9: inject custom rules into the prompt context by appending to source
         rule_context = _format_rules(rules)
+
+        # Discovery summary — honest about what regex extraction can and cannot see
+        ext_call_funcs: list[str] = []
+        try:
+            from phases.phase2_scenarios import _function_bodies
+            for fname, body in _function_bodies(session.source_code).items():
+                if re.search(r"\.\s*call\s*[{/(]|\.transfer\s*\(|\.send\s*\(|delegatecall\s*\(", body):
+                    ext_call_funcs.append(fname)
+        except Exception:
+            pass
+        session.discovery_summary = {
+            "functions": len(protocol_map.functions),
+            "state_variables": len(protocol_map.state_variables),
+            "modifiers": len(protocol_map.modifiers),
+            "imports": len(protocol_map.imports),
+            "external_calls": len(ext_call_funcs),
+            "external_call_functions": ext_call_funcs[:20],
+            "method": "regex_extraction_not_full_ast",
+        }
+        discovery_degraded = len(protocol_map.functions) == 0
+        await _emit_stage(
+            session.session_id, "discovery",
+            "degraded" if discovery_degraded else "completed",
+            **session.discovery_summary,
+        )
 
         await _broadcast(session.session_id, "phase1_complete", {
             "functions": protocol_map.functions,
@@ -539,18 +887,92 @@ async def _run_pipeline(
             })
         session.scenarios = scenarios
 
+        # ── Core v0.1: reasoning mode + hypotheses + attack paths ───────────
+        session.reasoning_mode = "LLM_ASSISTED" if scenario_result.source == "llm" else "HEURISTIC"
+        await _emit_stage(session.session_id, "reasoning", "completed",
+                          mode=session.reasoning_mode,
+                          detail=scenario_result.ai_reason or "")
+
+        m_contract_h = re.search(r"\bcontract\s+(\w+)", original_source_code or session.source_code)
+        target_contract_name = m_contract_h.group(1) if m_contract_h else ""
+        supported_vectors = {"reentrancy", "access_control", "arithmetic"}
+        _discovery_evidence_map = {
+            "reentrancy": [
+                "External call (.call/.transfer/.send) present in function body",
+                "State update follows external call (CEI-violation candidate)",
+            ],
+            "access_control": [
+                "Privileged-looking function without an ownership/role modifier",
+            ],
+            "arithmetic": [
+                "Arithmetic operation reachable from an external entry point",
+            ],
+        }
+        session.hypotheses = [
+            Hypothesis(
+                name=s.name,
+                category=s.attack_vector,
+                target_contract=target_contract_name,
+                target=s.entry_point,
+                rationale=s.description,
+                discovery_evidence=_discovery_evidence_map.get(
+                    s.attack_vector, ["Heuristic pattern match on source structure"]
+                ),
+                attack_objective=s.estimated_impact,
+                preconditions=list(s.preconditions or []),
+                exploit_steps=list(s.exploit_steps or []),
+                source_mode="LLM_ASSISTED" if scenario_result.source == "llm" else "HEURISTIC",
+                confidence=(
+                    "model-generated estimate — NOT verified"
+                    if scenario_result.source == "llm"
+                    else "heuristic pattern-match estimate — NOT verified"
+                ),
+                limitations=(
+                    [] if s.attack_vector in supported_vectors
+                    else [f"No PoC template for '{s.attack_vector}' in v0.1 — PoC will be SKIPPED_UNSUPPORTED"]
+                ),
+                scenario=s,
+            )
+            for s in scenarios
+        ]
+        attack_paths = [_attack_path_from_hypothesis(h) for h in session.hypotheses]
+        await _emit_stage(session.session_id, "hypothesis", "completed",
+                          count=len(session.hypotheses),
+                          hypotheses=[
+                              {"id": h.id, "name": h.name, "category": h.category,
+                               "target": h.target, "mode": h.source_mode}
+                              for h in session.hypotheses
+                          ])
+        await _emit_stage(session.session_id, "attack_path", "completed",
+                          paths=[dataclasses.asdict(p) for p in attack_paths])
+
+        # NOTE: hypotheses are persisted AFTER audit_save() creates the parent
+        # row (see persistence block below). Saving them here tripped
+        # `FOREIGN KEY constraint failed` and they were silently lost.
+
         await _broadcast(session.session_id, "phase2_complete", {
             "scenarios": [
                 {"name": s.name, "attack_vector": s.attack_vector, "entry_point": s.entry_point}
                 for s in scenarios
             ],
+            "hypotheses": [
+                {"id": h.id, "name": h.name, "category": h.category, "target": h.target}
+                for h in session.hypotheses
+            ],
         })
 
         session.status = "phase3"
+        await _emit_stage(session.session_id, "poc", "running")
+        await _emit_stage(session.session_id, "verification", "running",
+                          verifier="forge", available=forge_available,
+                          forge_version=_forge_version())
         await _broadcast(session.session_id, "progress", {"phase": 3, "message": "Simulating exploits...", "stage": "running_forge"})
 
         simulation_results = []
-        for i, scenario in enumerate(scenarios):
+        session.verification_records = []
+        verification_times: list[float] = []
+        executed_count = 0
+        for i, (scenario, hyp) in enumerate(zip(scenarios, session.hypotheses)):
             await _broadcast(session.session_id, "progress", {
                 "phase": 3,
                 "stage": "running_forge",
@@ -558,6 +980,31 @@ async def _run_pipeline(
             })
             proof, env = await phase3_simulate(original_source_code or session.source_code, scenario, router=router_llm, rpc_url=rpc_url)
             simulation_results.append((proof, env))
+            verification_times.append(time.time())
+
+            # ── Core v0.1: structured PoC + verification observability ─────
+            rec = _verification_record_from_proof(proof)
+            session.verification_records.append(rec)
+            if rec.test_status in ("passed", "ran"):
+                executed_count += 1
+            poc_out = proof.forge_output or ""
+            if proof.poc_code and "vm.skip(true)" in proof.poc_code:
+                poc_status = "skipped_unsupported"
+            elif proof.poc_code:
+                poc_status = "generated"
+            else:
+                poc_status = "failed"
+            await _emit_stage(session.session_id, "poc",
+                              "completed" if poc_status == "generated" else poc_status,
+                              index=i, hypothesis_id=hyp.id, vector=hyp.category)
+            await _emit_stage(session.session_id, "verification",
+                              "completed" if rec.test_status in ("passed", "ran") else rec.test_status,
+                              index=i, hypothesis_id=hyp.id,
+                              verifier=rec.verifier, verifier_version=rec.verifier_version,
+                              compile_status=rec.compile_status, test_status=rec.test_status,
+                              executed_tests=rec.executed_test_count,
+                              relevant_test=rec.relevant_test_name,
+                              duration_ms=rec.duration_ms)
 
         session.status = "phase4"
         await _broadcast(session.session_id, "progress", {"phase": 4, "message": "Judging findings...", "stage": "judging"})
@@ -609,40 +1056,219 @@ async def _run_pipeline(
                 "and MUST be manually triaged before relying on this audit."
             )
 
+        # ── Core v0.1: evidence packs + findings linkage ────────────────────
+        await _emit_stage(session.session_id, "evidence", "running")
+        scen_to_hyp = {id(h.scenario): h for h in session.hypotheses}
+        contract_name_guess = ""
+        m_contract = re.search(r"\bcontract\s+(\w+)", original_source_code or session.source_code)
+        if m_contract:
+            contract_name_guess = m_contract.group(1)
+
+        session.evidence_packs = []
+        for idx, f in enumerate(findings):
+            hyp = None
+            proof_i = None
+            if f.attack_scenario is not None:
+                hyp = scen_to_hyp.get(id(f.attack_scenario))
+            if hyp is None and f.attack_scenario is not None:
+                for j, s in enumerate(scenarios):
+                    if s is f.attack_scenario:
+                        proof_i = j
+                        break
+            else:
+                proof_i = next((j for j, h in enumerate(session.hypotheses) if h is hyp), None)
+            rec = (
+                session.verification_records[proof_i]
+                if proof_i is not None and proof_i < len(session.verification_records)
+                else None
+            )
+            poc_src = ""
+            observed = ""
+            env_limits: list[str] = []
+            if proof_i is not None and proof_i < len(simulation_results):
+                p, _env = simulation_results[proof_i]
+                poc_src = p.poc_code or ""
+                er = p.exploit_result
+                if er is not None:
+                    observed = "; ".join(er.evidence) if er.evidence else er.review_reason
+                    if not forge_available:
+                        env_limits.append("Forge verifier unavailable on this machine")
+                else:
+                    observed = (p.forge_output or "")[:500]
+                    if "[SKIPPED]" in (p.forge_output or ""):
+                        env_limits.append("Forge verifier unavailable on this machine")
+            attack_path = _attack_path_from_hypothesis(hyp) if hyp is not None else None
+            pack = EvidencePack(
+                audit_id=session.session_id,
+                finding_id=f.id,
+                source_hash=session.source_hash,
+                target_file=session.file_name,
+                contract_name=contract_name_guess,
+                function_name=(hyp.target if hyp else (f.affected_functions[0] if f.affected_functions else "")),
+                hypothesis_id=(hyp.id if hyp else ""),
+                vulnerability_hypothesis=(hyp.rationale if hyp else f.description[:300]),
+                attack_path=attack_path,
+                preconditions=list(hyp.preconditions) if hyp else [],
+                poc_source=poc_src,
+                poc_hash=(_sha256(poc_src) if poc_src else ""),
+                verification=rec,
+                verified_at=(
+                    verification_times[proof_i]
+                    if proof_i is not None and proof_i < len(verification_times)
+                    else 0.0
+                ),
+                observed_impact=observed,
+                reproduction_instructions="",
+                environmental_limitations=env_limits,
+            )
+            pack.reproduction_instructions = _reproduction_instructions(pack)
+            f.evidence_id = pack.id
+            session.evidence_packs.append(pack)
+
+        await _emit_stage(session.session_id, "evidence", "completed",
+                          count=len(session.evidence_packs),
+                          evidence_ids=[p.id for p in session.evidence_packs])
+        await _emit_stage(session.session_id, "finding", "completed",
+                          count=len(findings),
+                          confirmed=sum(1 for f in findings if f.confirmed),
+                          needs_review=sum(1 for f in findings if f.needs_review))
+
+        # ── Core v0.1: terminal state ────────────────────────────────────────
+        confirmed_count = sum(1 for f in findings if f.confirmed)
+        needs_review_count = sum(1 for f in findings if f.needs_review and not f.confirmed)
+        session.terminal_state = _compute_terminal_state(
+            pipeline_error=pipeline_error,
+            forge_available=forge_available,
+            confirmed_count=confirmed_count,
+            needs_review_count=needs_review_count,
+            hypotheses_count=len(session.hypotheses),
+            executed_count=executed_count,
+        )
+
+        # ── Core v0.1: durable persistence (survives restart; no TTL) ───────
+        session.finished_at = time.time()
+        md_report = _build_markdown_report(session)
+        json_report = _build_json_report(session)
+        session.report_markdown = md_report
+
+        def _persist_durable():
+            """Sync persistence — runs in a worker thread so lock retries
+            never stall the event loop (12h-loop fix)."""
+            audit_save({
+                "id": session.session_id,
+                "file_name": session.file_name,
+                "file_path": session.file_path,
+                "language": session.language,
+                "source_hash": session.source_hash,
+                "terminal_state": session.terminal_state,
+                "reasoning_mode": session.reasoning_mode,
+                "forge_available": forge_available,
+                "error": session.error,
+                "warnings": list(session.warnings),
+                "discovery": session.discovery_summary,
+                "findings": [_finding_to_dict(f) for f in findings],
+                "report_markdown": md_report,
+                "report_json": json_report,
+                "started_at": session.started_at,
+                "finished_at": session.finished_at,
+            })
+            audit_save_evidence(
+                session.session_id,
+                [dataclasses.asdict(p) | {
+                    "attack_path": dataclasses.asdict(p.attack_path) if p.attack_path else None,
+                    "verification": p.verification.to_dict() if p.verification else None,
+                } for p in session.evidence_packs],
+            )
+            # FK FIX: must run AFTER audit_save() — audit_hypotheses.audit_id
+            # references audits(id), so children need the parent row first.
+            audit_save_hypotheses(
+                session.session_id,
+                [dataclasses.asdict(h) | {"scenario": None} for h in session.hypotheses],
+            )
+
+        try:
+            await asyncio.to_thread(_persist_durable)
+        except Exception as e:
+            # Best-effort, but NEVER silent — a silent failure hid the FK bug
+            # that dropped all hypotheses from durable audits.
+            logger.error("audit %s: durable persistence failed: %s",
+                         session.session_id, e, exc_info=True)
+            session.warnings.append(f"Durable persistence incomplete: {e}")
+
+        await _emit_stage(session.session_id, "report", "completed",
+                          markdown_ready=True, json_ready=True,
+                          terminal_state=session.terminal_state)
+
         session.status = "complete"
         # Record timeline event for the persistent session store
         try:
             session_add_timeline(
                 session.session_id, "audit_complete",
-                f"Audit complete: {len(findings)} finding(s)",
+                f"Audit finished [{session.terminal_state}]: {len(findings)} finding(s)",
                 {"findings_count": len(findings),
-                 "confirmed": sum(1 for f in findings if f.confirmed)},
+                 "confirmed": confirmed_count,
+                 "terminal_state": session.terminal_state},
             )
         except Exception:
             pass  # timeline is best-effort, never block the pipeline
         await _broadcast(session.session_id, "complete", {
-            "findings": [
-                {
-                    "id": f.id,
-                    "title": f.title,
-                    "severity": f.severity,        # already uppercase via __post_init__
-                    "description": f.description,
-                    "confirmed": f.confirmed,
-                    "needs_review": f.needs_review,
-                    "category": f.category,
-                    "remediation": f.remediation,
-                    "affected_functions": f.affected_functions,
-                }
-                for f in findings
+            "audit_id": session.session_id,
+            "terminal_state": session.terminal_state,
+            "reasoning_mode": session.reasoning_mode,
+            "source_hash": session.source_hash,
+            "forge_version": _forge_version(),
+            "discovery": session.discovery_summary,
+            "hypotheses": [
+                {"id": h.id, "name": h.name, "category": h.category,
+                 "target": h.target, "mode": h.source_mode}
+                for h in session.hypotheses
             ],
-            "report": report,
+            "findings": [_finding_to_dict(f) for f in findings],
+            "evidence": [
+                {"id": p.id, "hypothesis_id": p.hypothesis_id,
+                 "finding_id": p.finding_id,
+                 "has_poc": bool(p.poc_source),
+                 "verification": p.verification.to_dict() if p.verification else None}
+                for p in session.evidence_packs
+            ],
+            "report": md_report,
+            "report_json": json_report,
             "warnings": list(session.warnings),
         })
 
     except Exception as e:
+        pipeline_error = True
         session.status = "error"
         session.error = str(e)
-        await _broadcast(session.session_id, "error", {"message": str(e)})
+        session.terminal_state = TerminalState.FAILED.value
+        session.finished_at = time.time()
+        try:
+            audit_save({
+                "id": session.session_id,
+                "file_name": session.file_name,
+                "file_path": session.file_path,
+                "language": session.language,
+                "source_hash": session.source_hash,
+                "terminal_state": session.terminal_state,
+                "reasoning_mode": session.reasoning_mode,
+                "forge_available": bool(_forge_version()),
+                "error": str(e),
+                "warnings": list(session.warnings),
+                "discovery": session.discovery_summary,
+                "findings": [],
+                "report_markdown": "",
+                "report_json": {},
+                "started_at": session.started_at,
+                "finished_at": session.finished_at,
+            })
+        except Exception:
+            pass
+        await _emit_stage(session.session_id, "report", "failed", error=str(e))
+        await _broadcast(session.session_id, "error", {
+            "message": str(e),
+            "audit_id": session.session_id,
+            "terminal_state": session.terminal_state,
+        })
     finally:
         await _broadcast(session.session_id, "thinking.end", {})
         # Keep completed session in TTL cache for retrieval
@@ -1049,12 +1675,13 @@ async def generate_report(body: dict):
         )
     from phases.phase4_judge import _simple_report
     report = _simple_report(session.findings)
-    report_path = Path(session.file_path).parent / f"sireen_report_{session_id}.md" if session.file_path else None
-    if report_path:
-        try:
-            report_path.write_text(report)
-        except Exception:
-            report_path = None
+    # S-3: never derive a write location from client-supplied file_path
+    # (arbitrary directory write). Reports land in the OS temp dir instead.
+    report_path = Path(tempfile.gettempdir()) / f"sireen_report_{session_id}.md"
+    try:
+        report_path.write_text(report)
+    except Exception:
+        report_path = None
     return {
         "report_markdown": report,
         "report_path": str(report_path) if report_path else None,
@@ -1231,11 +1858,102 @@ async def analyze_quick(body: dict):
 
 @app.get("/findings/{session_id}")
 async def get_findings(session_id: str):
-    """Retrieve findings for a session via REST."""
+    """Retrieve findings for a session via REST.
+
+    Falls back to the durable audit store when the in-memory session has
+    expired. An unknown id returns an explicit error — never an empty list,
+    which would be indistinguishable from a clean completed audit.
+    """
     session = _get_session(session_id)
-    if not session:
-        return {"findings": []}
-    return {"findings": [dataclasses.asdict(f) for f in session.findings]}
+    if session:
+        return {"findings": [dataclasses.asdict(f) for f in session.findings],
+                "audit_id": session_id}
+    durable = audit_get(session_id)
+    if durable:
+        return {"findings": durable.get("findings", []),
+                "audit_id": session_id,
+                "terminal_state": durable.get("terminal_state", "")}
+    return JSONResponse(
+        status_code=404,
+        content={"error": f"No audit found for id: {session_id}"},
+    )
+
+
+# ── Core v0.1: durable audit retrieval ───────────────────────────────────────
+
+@app.get("/audits")
+async def audits_index(limit: int = 50):
+    """List durable audits (metadata only), newest first."""
+    try:
+        limit = max(1, min(int(limit), 200))
+    except (TypeError, ValueError):
+        limit = 50
+    return {"audits": audits_list(limit)}
+
+
+def _enforce_evidence_integrity(audit: dict) -> dict:
+    """INTEGRITY GUARD (12h final audit): a finding may only be presented as
+    CONFIRMED if its evidence pack is actually present. If the referenced
+    pack is missing (corruption, partial persistence, manual deletion), the
+    confirmation is revoked at retrieval time and a loud warning is attached —
+    SIREEN must never display CONFIRMED without producible evidence."""
+    evidence_ids = {p.get("id") for p in (audit.get("evidence") or [])}
+    revoked = 0
+    for f in audit.get("findings") or []:
+        ev_id = f.get("evidence_id")
+        if f.get("confirmed") and ev_id and ev_id not in evidence_ids:
+            f["confirmed"] = False
+            f["needs_review"] = True
+            f["integrity_warning"] = (
+                f"Evidence pack '{ev_id}' is missing from the durable record. "
+                "CONFIRMED status revoked pending re-verification."
+            )
+            revoked += 1
+    if revoked:
+        warning = (f"{revoked} finding(s) had missing evidence packs; "
+                   "their CONFIRMED status was revoked.")
+        warnings = audit.get("warnings")
+        if isinstance(warnings, list):
+            warnings.append(warning)
+        else:
+            audit["warnings"] = [warning]
+        # A confirmed claim without its proof can no longer be terminal-CONFIRMED.
+        if audit.get("terminal_state") == TerminalState.CONFIRMED.value:
+            audit["terminal_state"] = TerminalState.DEGRADED.value
+    audit["_integrity_revoked"] = revoked > 0
+    return audit
+
+
+@app.get("/audits/{audit_id}")
+async def audits_show(audit_id: str):
+    """Full durable audit record incl. hypotheses, evidence packs, reports."""
+    audit = audit_get(audit_id)
+    if not audit:
+        return JSONResponse(status_code=404, content={"error": f"Audit not found: {audit_id}"})
+    return _enforce_evidence_integrity(audit)
+
+
+@app.get("/audits/{audit_id}/report")
+async def audits_report(audit_id: str, format: str = "markdown"):
+    """Markdown or JSON report regenerated from the durable audit record."""
+    audit = _enforce_evidence_integrity(audit_get(audit_id))
+    if not audit:
+        return JSONResponse(status_code=404, content={"error": f"Audit not found: {audit_id}"})
+    fmt = _as_text(format, "markdown").lower()
+    if fmt == "markdown":
+        md = audit.get("report_markdown", "")
+        if audit.get("_integrity_revoked"):
+            # Never serve a stored report whose claims outrank surviving evidence.
+            md += ("\n\n> **INTEGRITY WARNING:** one or more evidence packs are "
+                   "missing from the durable record. CONFIRMED statuses have been "
+                   "revoked pending re-verification. This report has been amended "
+                   "by SIREEN's evidence-integrity guard.\n")
+        return {"report": md, "format": "markdown",
+                "terminal_state": audit.get("terminal_state", "")}
+    if fmt == "json":
+        return {"report": audit.get("report_json", {}), "format": "json",
+                "terminal_state": audit.get("terminal_state", "")}
+    return JSONResponse(status_code=400, content={"error": f"Unsupported format: {format}"})
 
 
 # ── C-7: List active sessions ────────────────────────────────────────────────

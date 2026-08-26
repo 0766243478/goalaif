@@ -89,7 +89,6 @@ export default function OverviewView() {
   const highCount = state.findings.filter(f => f.severity === 'HIGH').length;
   const medCount = state.findings.filter(f => f.severity === 'MEDIUM').length;
   const lowCount = state.findings.filter(f => f.severity === 'LOW').length;
-  const riskScore = state.protocol?.riskScore ?? 0;
 
   return (
     <Stack gap={4}>
@@ -135,17 +134,14 @@ export default function OverviewView() {
 
       <AuditProgressBar />
 
-      <Grid columns={2} gap={2}>
+      <Grid columns={3} gap={2}>
         <StatCard value={state.findings.length} label="Findings" icon="findings" />
         <StatCard value={state.exploits.length} label="Exploits" icon="exploits" />
         <StatCard value={state.memoryEntries.length} label="Memory" icon="memory" />
-        <StatCard
-          value={`${state.protocol?.riskScore || '--'}/100`}
-          label="Risk Score"
-          icon="gauge"
-          color={riskScore > 70 ? 'critical' : riskScore > 40 ? 'medium' : 'low'}
-        />
       </Grid>
+      {/* Risk Score card REMOVED (Phase 8): no pipeline stage computes a risk
+          score — displaying "0/100" implied an authoritative rating that does
+          not exist. Terminal states carry verification truth instead. */}
 
       {(critCount > 0 || highCount > 0 || medCount > 0 || lowCount > 0) && (
         <Flex gap={1} wrap="wrap">
@@ -171,7 +167,7 @@ export default function OverviewView() {
             }}
             style={{ flex: 1 }}
           >
-            Full Audit
+            Audit This File
           </Button>
           <Button variant="secondary" iconLeft="chat" onClick={() => { dispatch({ type: 'SET_RIGHT_PANEL', open: true }); dispatch({ type: 'SET_RIGHT_PANEL_TAB', tab: 'chat' }); }} style={{ flex: 1 }}>
             Chat

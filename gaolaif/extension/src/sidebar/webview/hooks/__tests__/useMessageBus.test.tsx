@@ -2,6 +2,7 @@ import '@testing-library/jest-dom';
 import { render, act } from '@testing-library/react';
 import { useMessageBus, useSend } from '../useMessageBus';
 import { StoreProvider, useStore } from '../../store';
+import type { SireenState } from '../../store/types';
 import * as React from 'react';
 
 /**
@@ -12,6 +13,7 @@ import * as React from 'react';
 function makeHarness(consumerCount: number) {
   const dispatchCalls: string[] = [];
   let dispatchRef: React.Dispatch<unknown> | null = null;
+  let stateRef: SireenState | null = null;
 
   const Owner = () => {
     useMessageBus();
@@ -24,7 +26,7 @@ function makeHarness(consumerCount: number) {
   };
 
   const Spy = () => {
-    const { dispatch } = useStore();
+    const { state, dispatch } = useStore();
     // Wrap dispatch to record calls without breaking the reducer contract.
     React.useEffect(() => {
       dispatchRef = (action: unknown) => {
@@ -33,6 +35,7 @@ function makeHarness(consumerCount: number) {
         dispatch(action as never);
       };
     }, [dispatch]);
+    stateRef = state;
     return null;
   };
 
@@ -45,7 +48,7 @@ function makeHarness(consumerCount: number) {
       ))}
     </StoreProvider>
   );
-  return { tree, dispatchCalls, getDispatch: () => dispatchRef };
+  return { tree, dispatchCalls, getDispatch: () => dispatchRef, getState: () => stateRef };
 }
 
 function postMessage(command: string, payload: Record<string, unknown> = {}) {
@@ -123,7 +126,170 @@ describe('useMessageBus / useSend — single-listener invariant', () => {
 
     removeSpy.mockRestore();
   });
+
+  it('unwraps canonical audit completion events before updating findings and report state', () => {
+    const { tree, getState } = makeHarness(0);
+    render(tree);
+
+    postMessage('sireen.audit_complete', {
+      event_id: 'event-1',
+      session_id: 'audit-1',
+      type: 'audit_complete',
+      status: 'completed',
+      timestamp: Date.now(),
+      payload: {
+        // Core v0.1 contract: every completion carries an explicit
+        // terminal_state. UI must never infer success without it.
+        terminal_state: 'confirmed',
+        findings: [{
+          id: 'finding-1',
+          title: 'Reentrancy',
+          severity: 'HIGH',
+          description: 'External call before state update',
+          affected_functions: ['withdraw'],
+          confirmed: true,
+          category: 'reentrancy',
+          remediation: 'Apply CEI',
+          evidence_id: 'evd-test-1',
+        }],
+        evidence: [{ id: 'evd-test-1' }],
+        report: 'Audit report',
+        warnings: [],
+      },
+    });
+
+    expect(getState()?.findings).toHaveLength(1);
+    expect(getState()?.auditPhase).toBe('complete');
+    const messages = getState()?.chatMessages || [];
+    expect(messages[messages.length - 1]?.content).toBe('Audit report');
+  });
+
+  it('maps DEGRADED terminal state to incomplete phase (never generic success)', () => {
+    const { tree, getState } = makeHarness(0);
+    render(tree);
+
+    postMessage('sireen.audit_complete', {
+      event_id: 'event-2',
+      session_id: 'audit-2',
+      type: 'audit_complete',
+      status: 'completed',
+      timestamp: Date.now(),
+      payload: {
+        terminal_state: 'degraded',
+        findings: [{
+          id: 'finding-2', title: 'Needs review', severity: 'MEDIUM',
+          description: '', affected_functions: [], confirmed: false,
+          needs_review: true, category: 'reentrancy', remediation: '',
+          evidence_id: 'evd-2',
+        }],
+        evidence: [{ id: 'evd-2' }],
+        report: 'Degraded report',
+        warnings: ['1 finding(s) could not be verified'],
+      },
+    });
+
+    expect(getState()?.auditPhase).toBe('incomplete');
+  });
+
+  it('surfaces router-level errors (sireen.error) instead of swallowing them', () => {
+    const { tree, getState } = makeHarness(0);
+    render(tree);
+
+    postMessage('sireen.error', {
+      command: 'sireen.audit.request',
+      error: 'fetch failed',
+    });
+
+    expect(getState()?.auditPhase).toBe('error');
+    const messages = getState()?.chatMessages || [];
+    expect(messages[messages.length - 1]?.content).toContain('fetch failed');
+  });
+
+  // ── Task 13 negative tests: SIREEN UI must NOT lie ────────────────────────
+
+  it('does NOT show success when completion payload lacks terminal_state (malformed result)', () => {
+    const { tree, getState } = makeHarness(0);
+    render(tree);
+
+    postMessage('sireen.audit_complete', {
+      event_id: 'event-3',
+      session_id: 'audit-3',
+      type: 'audit_complete',
+      status: 'completed',
+      timestamp: Date.now(),
+      payload: {
+        // Malformed: no terminal_state. A dishonest UI would treat this as
+        // generic success. SIREEN must fall back to UNVERIFIED semantics.
+        findings: [{
+          id: 'finding-3', title: 'X', severity: 'HIGH', description: '',
+          affected_functions: [], confirmed: true, category: 'reentrancy',
+          remediation: '', evidence_id: '',
+        }],
+        report: 'report',
+        warnings: [],
+      },
+    });
+
+    expect(getState()?.auditPhase).toBe('incomplete');
+    expect(getState()?.auditPhase).not.toBe('complete');
+  });
+
+  it('zero findings with UNVERIFIED terminal state shows incomplete, never clean/success', () => {
+    const { tree, getState } = makeHarness(0);
+    render(tree);
+
+    postMessage('sireen.audit_complete', {
+      event_id: 'event-4',
+      session_id: 'audit-4',
+      type: 'audit_complete',
+      status: 'completed',
+      timestamp: Date.now(),
+      payload: {
+        terminal_state: 'unverified',
+        findings: [],
+        evidence: [],
+        report: '',
+        warnings: [],
+      },
+    });
+
+    expect(getState()?.auditPhase).toBe('incomplete');
+    const messages = getState()?.chatMessages || [];
+    expect(messages.some(m => m.content.includes('UNVERIFIED'))).toBe(true);
+  });
 });
+  it('stamps every finding with the durable audit_id so the Evidence Pack is reachable (Phase 5)', () => {
+    const { tree, getState } = makeHarness(0);
+    render(tree);
+
+    postMessage('sireen.audit_complete', {
+      event_id: 'event-5',
+      session_id: 'audit-5',
+      type: 'audit_complete',
+      status: 'completed',
+      timestamp: Date.now(),
+      payload: {
+        audit_id: 'audit-5',
+        terminal_state: 'confirmed',
+        findings: [
+          { id: 'f1', title: 'Reentrancy in withdraw', severity: 'CRITICAL', confirmed: true },
+          { id: 'f2', title: 'Unsafe math', severity: 'MEDIUM', confirmed: false },
+        ],
+        evidence: [],
+        report: '',
+        warnings: [],
+      },
+    });
+
+    const findings = getState()?.findings || [];
+    expect(findings.length).toBe(2);
+    for (const f of findings) {
+      // Without this link the Evidence Pack viewer is unreachable from the UI.
+      expect((f as unknown as Record<string, unknown>).audit_id).toBe('audit-5');
+    }
+  });
+
+
 
 function ConsumerOnly() {
   useSend();

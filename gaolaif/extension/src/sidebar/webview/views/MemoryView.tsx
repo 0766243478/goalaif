@@ -31,7 +31,7 @@ export default function MemoryView() {
           Memory
         </Text>
         <Text variant="caption" color="muted">
-          {state.memoryEntries.length} patterns stored
+          Experimental · {state.memoryEntries.length} patterns stored
         </Text>
       </Stack>
 

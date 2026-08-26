@@ -44,5 +44,8 @@ Thumbs.db
 
 # Logs
 *.log
+# Local databases (audit store)
+*.db
+*.sqlite*
 # Patch staging files
 *.patched

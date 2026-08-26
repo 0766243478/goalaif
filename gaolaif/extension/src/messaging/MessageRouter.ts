@@ -60,7 +60,7 @@ export class MessageRouter {
       'phase3_complete': { type: 'audit_phase3_complete', status: 'completed' },
       'phase4_complete': { type: 'audit_phase4_complete', status: 'completed' },
       'chat.message': { type: 'chat_message', status: 'completed' },
-      'error': { type: 'audit_progress', status: 'failed' },
+      'error': { type: 'audit_error', status: 'failed' },
       'thinking.start': { type: 'thinking_start', status: 'running' },
       'thinking.step': { type: 'thinking_step', status: 'running' },
       'thinking.end': { type: 'thinking_end', status: 'completed' },
@@ -97,6 +97,52 @@ export class MessageRouter {
       });
     }
 
+    // ── Core v0.1: structured pipeline-stage events ─────────────────────────
+    // Backend emits {"stage": <name>, "status": running|completed|failed|…, …extra}.
+    // Forward the raw payload as 'sireen.stage' AND surface a human-readable
+    // line in the chat panel so the user always sees what SIREEN is doing.
+    this.backendClient.onMessage('stage', (payload) => {
+      const p = (payload || {}) as Record<string, unknown>;
+      const stage = String(p.stage ?? '');
+      const status = String(p.status ?? '');
+      const icon = status === 'completed' ? '✓' : status === 'failed' ? '✗' : status === 'degraded' ? '⚠' : '▸';
+      let detail = '';
+      if (stage === 'discovery') {
+        detail = `${p.functions ?? 0} functions, ${p.state_variables ?? 0} state vars, ${p.external_calls ?? 0} external-call sites (regex-based)`;
+      } else if (stage === 'reasoning') {
+        detail = `mode=${p.mode ?? ''}`;
+      } else if (stage === 'hypothesis') {
+        detail = `${p.count ?? 0} hypothesis(ies) generated`;
+      } else if (stage === 'attack_path') {
+        detail = `${Array.isArray(p.paths) ? p.paths.length : 0} attack path(s) inspectable`;
+      } else if (stage === 'poc') {
+        detail = `hypothesis ${p.hypothesis_id ?? ''} → PoC ${status}`;
+      } else if (stage === 'verification') {
+        detail = `forge=${p.verifier_version || 'unavailable'} compile=${p.compile_status ?? '-'} tests=${p.test_status ?? '-'} (${p.executed_tests ?? 0} executed)`;
+      } else if (stage === 'evidence') {
+        detail = `${p.count ?? 0} evidence pack(s) built`;
+      } else if (stage === 'finding') {
+        detail = `${p.count ?? 0} finding(s): ${p.confirmed ?? 0} confirmed, ${p.needs_review ?? 0} need review`;
+      } else if (stage === 'report') {
+        detail = `terminal_state=${p.terminal_state ?? ''}`;
+      }
+      this.sidebarProvider.postMessageToWebview({
+        command: 'sireen.stage',
+        payload: p,
+      });
+      if (detail) {
+        this.sidebarProvider.postMessageToWebview({
+          command: 'sireen.chat.message',
+          payload: {
+            id: crypto.randomUUID(),
+            role: 'system',
+            content: `${icon} ${stage.toUpperCase()} ${status}${detail ? ' — ' + detail : ''}`,
+            timestamp: Date.now(),
+          },
+        });
+      }
+    });
+
     // Forward exploit results via the SINGLE canonical 'sireen.exploit.complete' command.
     // Previously we posted BOTH a legacy 'exploitResult' and 'sireen.exploit.complete',
     // which doubled message traffic and forced consumers to dedupe. One command, one source of truth.
@@ -118,49 +164,15 @@ export class MessageRouter {
       this.sidebarProvider.sendMediaConfig();
     });
 
-    this.on('sireen.session.create', async (p) => {
-      const name = (p as Record<string, unknown>).name as string | undefined;
-      const project = (p as Record<string, unknown>).project as string | undefined;
-      const sessionId = await this.sidebarProvider.createSession(name, project);
-      if (sessionId) {
-        this.sidebarProvider.postMessageToWebview({
-          command: 'sireen.session.created',
-          payload: { session_id: sessionId, name, project },
-        });
-      }
-    });
+    // NOTE: session create/list/delete are registered ONCE here (backend-backed
+    // implementations below). A previous duplicate registration silently
+    // overwrote these handlers — removed to keep one source of truth.
 
     this.on('sireen.session.switch', async (p) => {
       const sessionId = (p as Record<string, unknown>).session_id as string;
       const success = await this.sidebarProvider.switchSession(sessionId);
       this.sidebarProvider.postMessageToWebview({
         command: 'sireen.session.switched',
-        payload: { session_id: sessionId, success },
-      });
-    });
-
-    this.on('sireen.session.list', async (_p) => {
-      const sessions = await this.sidebarProvider.listSessions();
-      this.sidebarProvider.postMessageToWebview({
-        command: 'sireen.session.list',
-        payload: { sessions: sessions.map(s => ({
-          session_id: s.id,
-          name: s.name,
-          project: s.project,
-          status: s.status,
-          audit_phase: s.auditPhase,
-          findings_count: s.findings.length,
-          exploits_count: s.exploits.length,
-          created_at: s.timeline[0]?.timestamp || Date.now(),
-        })) },
-      });
-    });
-
-    this.on('sireen.session.delete', async (p) => {
-      const sessionId = (p as Record<string, unknown>).session_id as string;
-      const success = await this.sidebarProvider.deleteSession(sessionId);
-      this.sidebarProvider.postMessageToWebview({
-        command: 'sireen.session.deleted',
         payload: { session_id: sessionId, success },
       });
     });
@@ -316,6 +328,87 @@ export class MessageRouter {
         command: 'sireen.report.generated',
         payload: result,
       });
+    });
+
+    // ── Core v0.1: human-reviewable Evidence Pack viewer (Task 9) ──────────
+    // Fetches the durable audit record and renders the full chain
+    // audit→hypothesis→attack path→PoC→Forge verification→observation as a
+    // readable markdown document inside VS Code.
+    this.on('sireen.evidence.open', async (p) => {
+      const auditId = String((p as Record<string, unknown>).audit_id || '');
+      if (!auditId) {
+        throw new Error('No audit_id supplied for evidence view');
+      }
+      const audit = await this.backendClient.get(`/audits/${encodeURIComponent(auditId)}`) as Record<string, any>;
+      const lines: string[] = [
+        '# SIREEN Evidence Pack',
+        '',
+        `- Audit ID: \`${audit.id ?? auditId}\``,
+        `- Terminal state: **${String(audit.terminal_state || 'unknown').toUpperCase()}**`,
+        `- Reasoning mode: ${audit.reasoning_mode || 'n/a'}`,
+        `- Source hash: \`${audit.source_hash || 'n/a'}\``,
+        `- Target: ${audit.file_name || 'n/a'}`,
+        `- Forge available: ${audit.forge_available ? 'yes' : 'NO'}`,
+        '',
+        '## Hypotheses',
+      ];
+      for (const h of (audit.hypotheses || []) as Record<string, any>[]) {
+        lines.push(
+          `- **${h.name || h.id}** [${h.category}] target=${h.target || '?'} · mode=${h.source_mode}`,
+          `  - Rationale: ${h.rationale || ''}`,
+          `  - Discovery evidence: ${(h.discovery_evidence || []).join('; ') || 'n/a'}`,
+          `  - Confidence: ${h.confidence || 'n/a'} (heuristic label, NOT verification)`,
+          `  - Limitations: ${(h.limitations || []).join('; ') || 'none recorded'}`,
+        );
+      }
+      lines.push('', '## Evidence Packs');
+      const evs = (audit.evidence || []) as Record<string, any>[];
+      if (!evs.length) {
+        lines.push('_No evidence packs recorded._');
+      }
+      for (const e of evs) {
+        const v = e.verification || {};
+        const ap = e.attack_path || {};
+        lines.push(
+          `### ${e.id} → finding ${e.finding_id || '?'}`,
+          `- Hypothesis: ${e.hypothesis_id || 'n/a'} — ${e.vulnerability_hypothesis || ''}`,
+          `- Attack path: entry=${ap.entry_point || e.function_name || '?'}; transition=${ap.vulnerable_transition || 'n/a'}`,
+          `- Preconditions: ${(e.preconditions || ap.preconditions || []).join('; ') || 'none'}`,
+          `- Attacker actions: ${(ap.attacker_actions || []).join('; ') || 'n/a'}`,
+          `- Expected impact: ${ap.expected_impact || 'n/a'}`,
+          `- State assertions: ${(ap.state_assertions || []).join('; ') || 'n/a'}`,
+          `- PoC hash: \`${e.poc_hash || 'n/a'}\``,
+          '- Verifier: forge',
+          `  - Version: ${v.verifier_version || 'unavailable'}`,
+          `  - Compile: ${v.compile_status ?? 'not_run'} · Tests: ${v.test_status ?? 'not_run'} (${v.executed_test_count ?? 0} executed)`,
+          `  - Relevant test: ${v.relevant_test_name || 'n/a'}${v.relevant_test_passed === undefined ? '' : v.relevant_test_passed ? ' → PASSED' : ' → FAILED'}`,
+          `  - Duration: ${v.duration_ms ?? 0} ms`,
+          `- Observed impact: ${e.observed_impact || 'nothing observed'}`,
+          `- Limitations: ${(e.environmental_limitations || []).join('; ') || 'none'}`,
+          '',
+          '#### Reproduce',
+          '```',
+          e.reproduction_instructions || 'n/a',
+          '```',
+          '',
+          '#### Exact generated PoC',
+          '```solidity',
+          e.poc_source || '// no PoC was generated for this finding',
+          '```',
+          '',
+        );
+      }
+      lines.push('## Why this verdict?');
+      lines.push(
+        'CONFIRMED requires Forge execution of the relevant exploit test with a meaningful security assertion.',
+        'DEGRADED = partial verification; UNVERIFIED = insufficient coverage; FAILED = pipeline/PoC failure;',
+        'CLEAN_WITH_COVERAGE = every hypothesis executed by Forge and none reproduced.',
+      );
+      const doc = await vscode.workspace.openTextDocument({
+        content: lines.join(String.fromCharCode(10)),
+        language: 'markdown',
+      });
+      await vscode.window.showTextDocument(doc, { preview: true });
     });
 
     this.on('sireen.settings.setApiKey', async (p) => {

@@ -32,6 +32,9 @@ export function AuditProgressBar() {
   if (auditPhase === 'idle') return null;
 
   if (auditPhase === 'complete') {
+    // Core v0.1: this phase is ONLY reached when the backend declared
+    // terminal_state = confirmed | clean_with_coverage. Never claim more
+    // than the verifier-backed verdict allows.
     return (
       <div style={{
         padding: '6px 12px',
@@ -50,13 +53,46 @@ export function AuditProgressBar() {
           textTransform: 'uppercase',
           letterSpacing: '0.05em',
         }}>
-          {PHASE_LABELS[auditPhase]}
+          Finished
         </span>
         <span style={{
           fontSize: 'var(--text-xs)',
           color: 'var(--sireen-text-secondary)',
         }}>
-          Audit completed successfully
+          Forge-verified result — terminal verdict & evidence in chat
+        </span>
+      </div>
+    );
+  }
+
+  if (auditPhase === 'incomplete') {
+    // Core v0.1: distinct neutral banner for UNVERIFIED / DEGRADED outcomes.
+    // This is NOT success and NOT an error — it demands human review.
+    return (
+      <div style={{
+        padding: '6px 12px',
+        background: 'var(--sireen-raised)',
+        border: '1px solid rgba(148,163,184,0.25)',
+        borderRadius: 'var(--radius-md)',
+        marginBottom: 12,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+      }}>
+        <span style={{
+          fontSize: 'var(--text-xs)',
+          fontWeight: 700,
+          color: 'var(--sireen-text-secondary)',
+          textTransform: 'uppercase',
+          letterSpacing: '0.05em',
+        }}>
+          Unverified
+        </span>
+        <span style={{
+          fontSize: 'var(--text-xs)',
+          color: 'var(--sireen-text-secondary)',
+        }}>
+          Audit finished without full verification — review the terminal state & evidence in chat
         </span>
       </div>
     );
