@@ -1,9 +1,8 @@
-import { memo, Suspense, lazy, useEffect, useCallback, Component, type ReactNode } from 'react';
+import { memo, useEffect, useCallback, Component, type ReactNode, type ComponentType } from 'react';
 import { useStore } from '../../store';
 import type { ViewId } from '../../store/types';
 import { useSend } from '../../hooks/useMessageBus';
 import { RightPanel } from '../../layouts/RightPanel';
-import { BottomPanel } from '../../layouts/BottomPanel';
 import { Spinner } from '../components/Spinner';
 import { Alert } from '../components/Alert';
 import { Icon } from '../primitives/Icon';
@@ -14,25 +13,21 @@ import { Flex } from '../primitives/Flex';
 import { Stack } from '../primitives/Stack';
 import { Button } from '../components/Button';
 
-const SessionManagerView = lazy(() => import('../../views/SessionManagerView'));
-const OverviewView = lazy(() => import('../../views/OverviewView'));
-const FindingsView = lazy(() => import('../../views/FindingsView'));
-const ExploitsView = lazy(() => import('../../views/ExploitsView'));
-const MemoryView = lazy(() => import('../../views/MemoryView'));
-const ResearchNotesView = lazy(() => import('../../views/ResearchNotesView'));
-const TasksView = lazy(() => import('../../views/TasksView'));
-const SimulationView = lazy(() => import('../../views/SimulationView'));
-const SettingsView = lazy(() => import('../../views/SettingsView'));
+import SessionManagerView from '../../views/SessionManagerView';
+import OverviewView from '../../views/OverviewView';
+import FindingsView from '../../views/FindingsView';
+import ExploitsView from '../../views/ExploitsView';
+import ResearchNotesView from '../../views/ResearchNotesView';
+import TasksView from '../../views/TasksView';
+import SettingsView from '../../views/SettingsView';
 
-const viewComponents: Partial<Record<ViewId, React.LazyExoticComponent<React.ComponentType<Record<string, unknown>>>>> = {
+const viewComponents: Partial<Record<ViewId, ComponentType<Record<string, unknown>>>> = {
   sessionManager: SessionManagerView,
   overview: OverviewView,
   findings: FindingsView,
   exploits: ExploitsView,
-  memory: MemoryView,
   notes: ResearchNotesView,
   tasks: TasksView,
-  simulation: SimulationView,
   settings: SettingsView,
 };
 
@@ -47,10 +42,8 @@ const tabs: TabItem[] = [
   { id: 'overview', icon: 'overview', label: 'Overview' },
   { id: 'findings', icon: 'findings', label: 'Findings', badge: s => s.findings.length },
   { id: 'exploits', icon: 'exploits', label: 'Exploits', badge: s => s.exploits.length },
-  { id: 'memory', icon: 'memory', label: 'Memory', badge: s => s.memoryEntries.length },
   { id: 'notes', icon: 'notes', label: 'Notes' },
   { id: 'tasks', icon: 'tasks', label: 'Tasks', badge: s => s.tasks.filter(t => t.status === 'open').length },
-  { id: 'simulation', icon: 'simulation', label: 'Sandbox' },
   { id: 'settings', icon: 'settings', label: 'Settings' },
 ];
 
@@ -76,7 +69,6 @@ function SessionHeader() {
         activeView: state.activeView,
         rightPanelTab: state.rightPanelTab,
         rightPanelOpen: state.rightPanelOpen,
-        bottomPanelOpen: state.bottomPanelOpen,
       },
     });
   }, [state, send]);
@@ -101,7 +93,7 @@ function SessionHeader() {
   if (auditPhase === 'idle' && !state.contractCode) {
     nextStep = 'Open a .sol file and right-click → Audit';
   } else if (auditPhase === 'idle') {
-    nextStep = 'Run Full Audit to start analysis';
+    nextStep = 'Audit the selected Solidity file to start analysis';
     nextStepAction = () => dispatch({ type: 'SET_VIEW', view: 'overview' });
   } else if (auditPhase === 'phase1' || auditPhase === 'phase2' || auditPhase === 'phase3' || auditPhase === 'phase4') {
     nextStep = `Audit running: ${auditPhase}…`;
@@ -332,13 +324,10 @@ function CopilotLayoutImpl() {
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
           <div style={{ flex: 1, overflow: 'auto', padding: 'var(--sireen-space-3) var(--sireen-space-4)' }}>
-            <Suspense fallback={<ViewLoader />}>
-              <ViewErrorBoundary>
-                <ViewComponent />
-              </ViewErrorBoundary>
-            </Suspense>
+            <ViewErrorBoundary>
+              <ViewComponent />
+            </ViewErrorBoundary>
           </div>
-          {state.bottomPanelOpen && !isSessionManager && <BottomPanel />}
         </div>
         {state.rightPanelOpen && !isSessionManager && <RightPanel />}
       </div>

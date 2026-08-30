@@ -137,7 +137,6 @@ export default function OverviewView() {
       <Grid columns={3} gap={2}>
         <StatCard value={state.findings.length} label="Findings" icon="findings" />
         <StatCard value={state.exploits.length} label="Exploits" icon="exploits" />
-        <StatCard value={state.memoryEntries.length} label="Memory" icon="memory" />
       </Grid>
       {/* Risk Score card REMOVED (Phase 8): no pipeline stage computes a risk
           score — displaying "0/100" implied an authoritative rating that does

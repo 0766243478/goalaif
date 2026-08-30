@@ -318,7 +318,9 @@ export class WorkspaceDiscovery {
       if (pkg.dependencies) {
         dependencies.push(...Object.keys(pkg.dependencies));
       }
-    } catch {}
+    } catch (error) {
+      void error;
+    }
 
     // Check foundry.toml
     const foundryTomlPath = path.join(rootPath, 'foundry.toml');
@@ -329,7 +331,9 @@ export class WorkspaceDiscovery {
       if (remappings) {
         dependencies.push(...remappings[1].split(',').map(s => s.trim()));
       }
-    } catch {}
+    } catch (error) {
+      void error;
+    }
 
     return dependencies;
   }

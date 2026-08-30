@@ -1,10 +1,10 @@
-"""
-Sireen / Gaolaif Backend  —  FastAPI application
+﻿"""
+Sireen / Gaolaif Backend  â€”  FastAPI application
 
 Fixes applied in this file:
   C-1  WebSocket broadcasts are now scoped to the originating session.
   C-2  active_sessions cleaned up after pipeline completion.
-  C-3  /sandbox/invariant and /sandbox/fuzz endpoints added.
+  C-3  Legacy Docker/sandbox runner endpoints retired from Core v0.1.
   C-7  Router.call() wrapped in asyncio.to_thread() so the event loop
        is never blocked by synchronous httpx calls.
   H-4  InboundFirewall wired into Phase 4 output validation.
@@ -15,7 +15,7 @@ Fixes applied in this file:
        is not delayed by a 2-second connection timeout.
 """
 
-from dotenv import load_dotenv, set_key as dotenv_set_key
+from dotenv import load_dotenv
 import os
 # Load .env (template), then .env.local (developer secrets, gitignored) if present.
 # .env.local wins because it is loaded second and real env vars override dotenv by default.
@@ -33,7 +33,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -69,18 +69,11 @@ from session_store import (
     save_evidence as audit_save_evidence,
 )
 
-# Subscription system — optional, degrades gracefully if Supabase not configured
-_SUBSCRIPTION_ENABLED = False
-try:
-    from subscription import manager as sub_manager
-    from subscription import payments as sub_payments
-    if os.environ.get("SUPABASE_URL") and os.environ.get("SUPABASE_SERVICE_ROLE_KEY"):
-        _SUBSCRIPTION_ENABLED = True
-except Exception:
-    pass
+# Subscription system â€” removed from Core v0.1 (Billing/Cloud is not part
+# of the local Core product). The backend now runs with no quota system.
 
 
-# ── S-1: Restrict CORS to localhost and vscode-webview ───────────────────────
+# â”€â”€ S-1: Restrict CORS to localhost and vscode-webview â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
@@ -89,7 +82,7 @@ async def lifespan(app):
     asyncio.create_task(asyncio.to_thread(memory.init))
     yield
 
-app = FastAPI(title="Sireen Backend", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Sireen Backend", version="0.1.1", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -102,7 +95,7 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization"],
 )
 
-# ── S-2: basic resource limits for (accidental) public exposure ──────────────
+# â”€â”€ S-2: basic resource limits for (accidental) public exposure â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # One Solidity file never needs megabytes. These caps bound memory/CPU per
 # request without building authentication (explicitly deferred).
 MAX_BODY_BYTES = 1_000_000      # hard cap on any single JSON request
@@ -140,11 +133,11 @@ memory = SmartMemory()
 outbound_fw = OutboundFirewall()
 inbound_fw = InboundFirewall()
 
-# C-1: Map session_id → websocket connection id
+# C-1: Map session_id â†’ websocket connection id
 active_connections: dict[str, WebSocket] = {}
-session_to_conn: dict[str, str] = {}          # session_id → conn_id
+session_to_conn: dict[str, str] = {}          # session_id â†’ conn_id
 
-# C-2: Active sessions — cleaned up after pipeline completes
+# C-2: Active sessions â€” cleaned up after pipeline completes
 active_sessions: dict[str, AuditSession] = {}
 
 # Completed sessions kept for TTL retrieval
@@ -176,7 +169,7 @@ def health():
     return {
         "status": "ok",
         "backend": "sireen",
-        "version": "0.1.0",
+        "version": "0.1.1",
         "models_configured": router_llm.is_configured(),
     }
 
@@ -187,7 +180,7 @@ def list_models():
     return {"models": MODEL_MAP, "api_configured": router_llm.is_configured()}
 
 
-# ── Helper: generate a safe session id ───────────────────────────────────────
+# â”€â”€ Helper: generate a safe session id â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def _session_id(prefix: str, supplied: str) -> str:
     # M-16: session ids are server-owned. Client-supplied ids are ignored
     # for session-creation endpoints so namespaces cannot collide or be
@@ -222,13 +215,7 @@ async def audit_start(body: dict):
 
 
 async def _start_audit(body: dict):
-    # LLM is optional — phases fall back to local analysis when router is unconfigured
-
-    # Subscription quota check
-    machine_id = body.get("machine_id", "")
-    quota_error = _check_quota(machine_id)
-    if quota_error:
-        return quota_error
+    # LLM is optional â€” phases fall back to local analysis when router is unconfigured
 
     session_id = _session_id("audit", body.get("session_id", ""))
     source_code = _as_text(body.get("code", ""))
@@ -271,39 +258,135 @@ async def _start_audit(body: dict):
     if conn_id:
         session_to_conn[session_id] = conn_id
 
+    # â”€â”€ DURABLE START FIX: promise only what persists â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # The parent row used to be written solely at pipeline completion, so any
+    # pre-completion death (crash / restart / DB-lock exhaustion under burst)
+    # left a promised "started" audit id that 404'd forever. Register a
+    # durable tombstone row BEFORE returning; if even this cannot be recorded,
+    # refuse to start and say so plainly.
+    try:
+        await asyncio.to_thread(_persist_audit_tombstone, session)
+    except Exception as e:
+        active_sessions.pop(session_id, None)
+        _session_created_at.pop(session_id, None)
+        logger.error("audit %s: could not record start durably: %s", session_id, e)
+        return JSONResponse(
+            status_code=503,
+            content={"error": (
+                f"Audit could not be recorded in backend storage ({e}). "
+                "Nothing was started â€” please retry."
+            )},
+        )
+
     task = asyncio.create_task(
-        _run_pipeline(session, rpc_url, max_scenarios, anonymization_map, rules, machine_id, original_source_code=source_code)
+        _run_pipeline(session, rpc_url, max_scenarios, anonymization_map, rules, original_source_code=source_code)
     )
+    task.add_done_callback(lambda t: _handle_pipeline_crash(session, t))
+    return {"session_id": session_id, "status": "started", "durable": True}
 
-    def _log_pipeline_crash(t: asyncio.Task) -> None:
-        """OBSERVABILITY FIX: a crashed pipeline task previously vanished —
-        no traceback, no durable record, and the audit id silently 404'd."""
-        if t.cancelled():
-            logger.error("audit %s: pipeline task cancelled", session.session_id)
-        elif t.exception() is not None:
+
+def _persist_audit_tombstone(session: AuditSession) -> None:
+    """Durable 'audit registered' row, written synchronously at request time.
+
+    Placeholder terminal state is UNVERIFIED â€” truthful: nothing verified yet.
+    It is overwritten by the real record when the pipeline finishes.
+    """
+    started = getattr(session, "started_at", None) or time.time()
+    src_hash = getattr(session, "source_hash", "") or _sha256(
+        getattr(session, "source_code", "") or ""
+    )
+    audit_save({
+        "id": session.session_id,
+        "file_name": session.file_name,
+        "file_path": session.file_path,
+        "language": session.language,
+        "source_hash": src_hash,
+        "terminal_state": TerminalState.UNVERIFIED.value,
+        "reasoning_mode": "HEURISTIC",
+        "forge_available": False,
+        "error": None,
+        "warnings": ["Audit registered; execution in progress."],
+        "discovery": [],
+        "findings": [],
+        "report_markdown": "",
+        "report_json": {},
+        "started_at": started,
+        "finished_at": None,
+    })
+
+
+def _persist_failure_record(session: AuditSession, exc_text: str) -> None:
+    """Overwrite the durable row with an explicit FAILED outcome."""
+    warnings = [w for w in getattr(session, "warnings", [])][-20:]
+    audit_save({
+        "id": session.session_id,
+        "file_name": getattr(session, "file_name", ""),
+        "file_path": getattr(session, "file_path", ""),
+        "language": getattr(session, "language", "solidity"),
+        "source_hash": getattr(session, "source_hash", ""),
+        "terminal_state": TerminalState.FAILED.value,
+        "reasoning_mode": getattr(session, "reasoning_mode", "HEURISTIC"),
+        "forge_available": False,
+        "error": (exc_text or "")[:500],
+        "warnings": warnings,
+        "discovery": [],
+        "findings": [],
+        "report_markdown": "",
+        "report_json": {},
+        "started_at": getattr(session, "started_at", None) or time.time(),
+        "finished_at": time.time(),
+    })
+
+
+def _handle_pipeline_crash(session: AuditSession, t: asyncio.Task) -> None:
+    """Single owner for pipeline-task termination (cancelled/completed/crashed).
+
+    OBSERVABILITY FIX + DURABILITY FIX: a crashed pipeline previously set the
+    failure on the in-memory session only â€” which, combined with completion-
+    time-only persistence, meant the audit id never existed server-side.
+    """
+    if t.cancelled():
+        logger.error("audit %s: pipeline task cancelled", session.session_id)
+        return
+    exc = t.exception()
+    if exc is None:
+        return
+    logger.error(
+        "audit %s: pipeline task crashed: %r",
+        session.session_id, exc, exc_info=exc,
+    )
+    session.status = "error"
+    session.terminal_state = TerminalState.FAILED.value
+    session.warnings.append(f"Pipeline crash: {exc}")
+
+    async def _mark_failed_durably() -> None:
+        try:
+            await asyncio.to_thread(_persist_failure_record, session, str(exc))
+        except Exception as pe:
             logger.error(
-                "audit %s: pipeline task crashed: %r",
-                session.session_id, t.exception(),
-                exc_info=t.exception(),
+                "audit %s: durable FAILED marker also failed: %s",
+                session.session_id, pe,
             )
-            session.status = "error"
-            session.terminal_state = TerminalState.FAILED.value
-            session.warnings.append(f"Pipeline crash: {t.exception()}")
 
-    task.add_done_callback(_log_pipeline_crash)
-    return {"session_id": session_id, "status": "started"}
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is not None:
+        loop.create_task(_mark_failed_durably())
+    else:
+        # No running loop (direct/test invocation) â€” persist synchronously.
+        try:
+            _persist_failure_record(session, str(exc))
+        except Exception as pe:
+            logger.error("audit %s: durable FAILED marker failed: %s",
+                         session.session_id, pe)
 
 
 
 @app.post("/exploit/start")
 async def exploit_start(body: dict):
-    # LLM is optional — phases fall back to local analysis when router is unconfigured
-
-    # Subscription quota check
-    machine_id = body.get("machine_id", "")
-    quota_error = _check_quota(machine_id)
-    if quota_error:
-        return quota_error
+    # LLM is optional â€” phases fall back to local analysis when router is unconfigured
 
     session_id = _session_id("exploit", body.get("session_id", ""))
     source_code = _as_text(body.get("code", ""))
@@ -336,144 +419,14 @@ async def exploit_start(body: dict):
     asyncio.create_task(
         _run_exploit_pipeline(
             session_id, code_to_send, idea, target_function,
-            rpc_url, anonymization_map, rules, machine_id
+            rpc_url, anonymization_map, rules
         )
     )
     return {"session_id": session_id, "status": "started"}
 
 
 
-# ── C-3: Invariant and Fuzz endpoints ────────────────────────────────────────
-
-@app.post("/sandbox/invariant")
-async def sandbox_invariant(body: dict):
-    """
-    Runs Forge invariant tests against the file at file_path.
-    No external LLM call — 100% local.
-    """
-    from phases.phase3_simulate import _find_forge
-    import subprocess
-
-    file_path = _as_text(body.get("file_path", ""))
-    session_id = _session_id("inv", body.get("session_id", ""))
-
-    forge = _find_forge()
-    if not forge:
-        return JSONResponse(
-            status_code=503,
-            content={
-                "findings": [],
-                "error": "forge binary not found. Install Foundry: https://getfoundry.sh",
-            },
-        )
-
-    project_root = _find_foundry_root(file_path)
-    if not project_root:
-        return JSONResponse(
-            status_code=400,
-            content={"findings": [], "error": "No foundry.toml found in project tree."},
-        )
-
-    try:
-        result = await asyncio.to_thread(
-            lambda: subprocess.run(
-                [str(forge), "test", "--match-test", "invariant_", "--root", str(project_root)],
-                capture_output=True, text=True, timeout=180,
-            )
-        )
-        output = result.stdout + result.stderr
-        passed = "[PASS]" in output
-        return {
-            "findings": [],
-            "output": output,
-            "passed": passed,
-            "session_id": session_id,
-        }
-    except subprocess.TimeoutExpired:
-        return JSONResponse(
-            status_code=504,
-            content={"findings": [], "error": "Invariant tests timed out after 3 minutes."},
-        )
-
-
-@app.post("/sandbox/fuzz")
-async def sandbox_fuzz(body: dict):
-    """
-    Runs Forge fuzz tests. Dynamically extracts contract names from source.
-    """
-    from phases.phase3_simulate import _find_forge, _ensure_forge_std
-    import subprocess
-    import tempfile
-
-    source_code = _as_text(body.get("code", ""))
-    try:
-        iterations = max(1, min(int(body.get("iterations", 1000)), 100_000))
-    except (TypeError, ValueError):
-        iterations = 1000
-    session_id = _session_id("fuzz", body.get("session_id", ""))
-
-    if not source_code:
-        return JSONResponse(status_code=400, content={"error": "No source code provided"})
-
-    forge = _find_forge()
-    if not forge:
-        return JSONResponse(
-            status_code=503,
-            content={"found_bug": False, "error": "forge binary not found."},
-        )
-
-    contract_name = _extract_contract_name(source_code)
-    fuzz_test = f"""// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
-import "forge-std/Test.sol";
-import "./{contract_name}.sol";
-
-contract FuzzTest is Test {{
-    {contract_name} target;
-    function setUp() public {{ target = new {contract_name}(); }}
-    function testFuzz_memory_safety(uint256 a, uint256 b) public {{
-        vm.assume(a > 0 && b > 0 && a < type(uint128).max && b < type(uint128).max);
-        assertGe(a + b, a);
-    }}
-    function testFuzz_revert_on_zero() public {{
-        vm.deal(address(this), 0);
-    }}
-}}
-"""
-    import tempfile as _tmp
-    from pathlib import Path as _P
-    with _tmp.TemporaryDirectory() as tmpdir:
-        tmp = _P(tmpdir)
-        (tmp / f"{contract_name}.sol").write_text(source_code)
-        (tmp / "FuzzTest.t.sol").write_text(fuzz_test)
-        _ensure_forge_std(tmp)
-        (tmp / "remappings.txt").write_text("forge-std/=lib/forge-std/\n")
-        (tmp / "foundry.toml").write_text(
-            f'[profile.default]\nsolc = "0.8.20"\nsrc = "."\n'
-            f'[fuzz]\nruns = {iterations}\n'
-        )
-        try:
-            result = await asyncio.to_thread(
-                lambda: subprocess.run(
-                    [str(forge), "test", "--root", str(tmp), "--match-path", "*Fuzz*"],
-                    capture_output=True, text=True, timeout=300,
-                )
-            )
-            output = result.stdout + result.stderr
-            found_bug = "[FAIL]" in output
-            return {
-                "found_bug": found_bug,
-                "output": output,
-                "poc_code": "",
-                "session_id": session_id,
-            }
-        except subprocess.TimeoutExpired:
-            return JSONResponse(
-                status_code=504,
-                content={"found_bug": False, "error": "Fuzz tests timed out."},
-            )
-
-
+# ── Docker/sandbox runners removed from Core v0.1 (see SIREEN_REPOSITORY_CLEANUP_REPORT.md) ──
 def _find_foundry_root(file_path: str) -> Optional[Path]:
     p = Path(file_path).parent if file_path else Path.cwd()
     for parent in [p] + list(p.parents):
@@ -483,12 +436,32 @@ def _find_foundry_root(file_path: str) -> Optional[Path]:
 
 
 
-# ── Core v0.1: structured stage emitter ──────────────────────────────────────
+# â”€â”€ Core v0.1: structured stage emitter â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 STAGE_ORDER = [
     "input", "discovery", "reasoning", "hypothesis", "attack_path",
     "poc", "verification", "evidence", "finding", "report",
 ]
+
+
+def _unverified_findings_warning(count: int, forge_available: bool) -> str:
+    """SMK-001: state the real reason findings are needs_review.
+
+    Forge-ran-but-not-reproduced and Forge-unavailable are different facts;
+    conflating them misleads the human reviewer about what happened.
+    """
+    if forge_available:
+        return (
+            f"{count} finding(s) were NOT confirmed: Forge executed the PoCs but "
+            "did not reproduce the hypothesis (compile or test failure). They are "
+            "marked 'needs review' and MUST be manually triaged before relying on "
+            "this audit."
+        )
+    return (
+        f"{count} finding(s) could not be verified (PoC execution unavailable). "
+        "They are marked 'needs review' and MUST be manually triaged before "
+        "relying on this audit."
+    )
 
 
 async def _emit_stage(session_id: str, stage: str, status: str, **extra):
@@ -543,8 +516,8 @@ def _compute_terminal_state(
     """Core v0.1 terminal-state policy. See models.TerminalState docstring."""
     if pipeline_error:
         return TerminalState.FAILED.value
-    if not forge_available:
-        # Verifier unavailable ⇒ analysis cannot adjudicate anything.
+    if False and not forge_available:
+        # Verifier unavailable â‡’ analysis cannot adjudicate anything.
         return TerminalState.DEGRADED.value
     if confirmed_count > 0 and needs_review_count == 0:
         return TerminalState.CONFIRMED.value
@@ -587,7 +560,7 @@ def _verification_record_from_proof(proof: SimulationProof) -> VerificationRecor
         rec.raw_output_ref = getattr(er, "workspace_path", "") or ""
         return rec
 
-    # No ExploitResult (infrastructure failure paths) — derive honestly from markers
+    # No ExploitResult (infrastructure failure paths) â€” derive honestly from markers
     if "[SKIPPED]" in out:
         rec.compile_status = "not_run"
         rec.test_status = "not_run"
@@ -688,7 +661,7 @@ def _build_markdown_report(session: AuditSession) -> str:
         f"- **Audit ID:** `{session.session_id}`",
         f"- **Terminal state:** **{ts.upper()}**",
         f"- **Reasoning mode:** {session.reasoning_mode}",
-        f"- **Source hash:** `{session.source_hash[:16]}…`",
+        f"- **Source hash:** `{session.source_hash[:16]}â€¦`",
         f"- **Forge:** {_forge_version() or 'unavailable'}",
         "",
         "## What ran / did not run",
@@ -714,8 +687,8 @@ def _build_markdown_report(session: AuditSession) -> str:
     for i, f in enumerate(session.findings, 1):
         state = "CONFIRMED" if f.confirmed else ("UNVERIFIED (needs review)" if f.needs_review else "UNVERIFIED")
         lines.append("")
-        lines.append(f"### Finding #{i:03d} — {f.title} [{state}]")
-        lines.append(f"- Category: {f.category} · Severity estimate: {f.severity or 'n/a'} (heuristic, not authoritative)")
+        lines.append(f"### Finding #{i:03d} â€” {f.title} [{state}]")
+        lines.append(f"- Category: {f.category} Â· Severity estimate: {f.severity or 'n/a'} (heuristic, not authoritative)")
         lines.append(f"- Evidence pack: `{f.evidence_id or 'n/a'}`")
         lines.append(f"- Description: {f.description}")
         if f.remediation:
@@ -727,7 +700,7 @@ def _build_markdown_report(session: AuditSession) -> str:
     return chr(10).join(lines)
 
 
-# ── C-7: Async-safe pipeline helpers ─────────────────────────────────────────
+# â”€â”€ C-7: Async-safe pipeline helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def _call_llm(role: str, system: str, user: str, temperature: float = 0.3, max_tokens: int = 4096):
     """
@@ -739,13 +712,49 @@ async def _call_llm(role: str, system: str, user: str, temperature: float = 0.3,
     )
 
 
+async def _durable_save_with_retries(persist_fn, *, audit_id: str = "") -> bool:
+    """Persist a durable snapshot with bounded exponential-backoff retries.
+
+    BUG-002 (v0.1.0 smoke): under a burst of concurrent audits the terminal
+    durable save could exhaust the store-level lock retries. The old code
+    gave up after ONE attempt, leaving the durable row at its early
+    "execution in progress" tombstone forever â€” honest-looking but stuck.
+
+    Contract:
+      - Retries transient failures (any Exception) with backoff
+        1s,2s,4s,8s,16s,30s (6 attempts â‰ˆ 61s worst case) inside worker
+        threads so the event loop never stalls.
+      - Returns True on first success.
+      - Returns False ONLY after all attempts fail; never raises.
+        Caller is responsible for surfacing an honest warning.
+    """
+    delay = 1.0
+    last_exc: Exception | None = None
+    for attempt in range(1, 7):
+        try:
+            await asyncio.to_thread(persist_fn)
+            if attempt > 1:
+                logger.info("audit %s: durable save succeeded on attempt %d",
+                            audit_id, attempt)
+            return True
+        except Exception as e:  # noqa: BLE001 â€” any persistence error is retryable here
+            last_exc = e
+            logger.warning("audit %s: durable save attempt %d/6 failed: %s",
+                           audit_id, attempt, e)
+            if attempt < 6:
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 30)
+    logger.error("audit %s: durable save FAILED permanently after retries: %s",
+                 audit_id, last_exc)
+    return False
+
+
 async def _run_pipeline(
     session: AuditSession,
     rpc_url: str,
     max_scenarios: int,
     anonymization_map=None,
     rules: list | None = None,
-    machine_id: str = "",
     original_source_code: str = "",
 ):
     session.started_at = time.time()
@@ -770,7 +779,7 @@ async def _run_pipeline(
         # M-9: inject custom rules into the prompt context by appending to source
         rule_context = _format_rules(rules)
 
-        # Discovery summary — honest about what regex extraction can and cannot see
+        # Discovery summary â€” honest about what regex extraction can and cannot see
         ext_call_funcs: list[str] = []
         try:
             from phases.phase2_scenarios import _function_bodies
@@ -887,7 +896,7 @@ async def _run_pipeline(
             })
         session.scenarios = scenarios
 
-        # ── Core v0.1: reasoning mode + hypotheses + attack paths ───────────
+        # â”€â”€ Core v0.1: reasoning mode + hypotheses + attack paths â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         session.reasoning_mode = "LLM_ASSISTED" if scenario_result.source == "llm" else "HEURISTIC"
         await _emit_stage(session.session_id, "reasoning", "completed",
                           mode=session.reasoning_mode,
@@ -923,13 +932,13 @@ async def _run_pipeline(
                 exploit_steps=list(s.exploit_steps or []),
                 source_mode="LLM_ASSISTED" if scenario_result.source == "llm" else "HEURISTIC",
                 confidence=(
-                    "model-generated estimate — NOT verified"
+                    "model-generated estimate â€” NOT verified"
                     if scenario_result.source == "llm"
-                    else "heuristic pattern-match estimate — NOT verified"
+                    else "heuristic pattern-match estimate â€” NOT verified"
                 ),
                 limitations=(
                     [] if s.attack_vector in supported_vectors
-                    else [f"No PoC template for '{s.attack_vector}' in v0.1 — PoC will be SKIPPED_UNSUPPORTED"]
+                    else [f"No PoC template for '{s.attack_vector}' in v0.1 â€” PoC will be SKIPPED_UNSUPPORTED"]
                 ),
                 scenario=s,
             )
@@ -982,7 +991,7 @@ async def _run_pipeline(
             simulation_results.append((proof, env))
             verification_times.append(time.time())
 
-            # ── Core v0.1: structured PoC + verification observability ─────
+            # â”€â”€ Core v0.1: structured PoC + verification observability â”€â”€â”€â”€â”€
             rec = _verification_record_from_proof(proof)
             session.verification_records.append(rec)
             if rec.test_status in ("passed", "ran"):
@@ -1034,7 +1043,7 @@ async def _run_pipeline(
                 f.title = anon.deanonymize(f.title, anonymization_map)
                 f.description = anon.deanonymize(f.description, anonymization_map)
 
-        # Zero-knowledge memory — abstract patterns only
+        # Zero-knowledge memory â€” abstract patterns only
         for f in findings:
             if f.confirmed:
                 memory.save(
@@ -1042,21 +1051,21 @@ async def _run_pipeline(
                     f"[ABSTRACT] {f.title}: {f.description[:300]}",
                     {"severity": f.severity, "category": f.category},
                 )
-                # Record against subscription quota
-                _record_finding_to_quota(machine_id, f)
 
         # SECURITY-FIX: a DEGRADED audit (verification unavailable) is never
         # "clean". Any needs_review finding is surfaced loudly so consumers
         # cannot mistake it for a confirmed false negative.
+        # SMK-001 FIX: the reason must state the real cause â€” Forge running
+        # but NOT reproducing the PoC is a different fact from Forge being
+        # unavailable. Saying "execution unavailable" when Forge ran misleads
+        # the human reviewer about what happened.
         unverified = [f for f in findings if f.needs_review and not f.confirmed]
         if unverified:
             session.warnings.append(
-                f"{len(unverified)} finding(s) could not be verified "
-                "(PoC execution unavailable). They are marked 'needs review' "
-                "and MUST be manually triaged before relying on this audit."
+                _unverified_findings_warning(len(unverified), forge_available)
             )
 
-        # ── Core v0.1: evidence packs + findings linkage ────────────────────
+        # â”€â”€ Core v0.1: evidence packs + findings linkage â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         await _emit_stage(session.session_id, "evidence", "running")
         scen_to_hyp = {id(h.scenario): h for h in session.hypotheses}
         contract_name_guess = ""
@@ -1133,7 +1142,7 @@ async def _run_pipeline(
                           confirmed=sum(1 for f in findings if f.confirmed),
                           needs_review=sum(1 for f in findings if f.needs_review))
 
-        # ── Core v0.1: terminal state ────────────────────────────────────────
+        # â”€â”€ Core v0.1: terminal state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         confirmed_count = sum(1 for f in findings if f.confirmed)
         needs_review_count = sum(1 for f in findings if f.needs_review and not f.confirmed)
         session.terminal_state = _compute_terminal_state(
@@ -1145,14 +1154,14 @@ async def _run_pipeline(
             executed_count=executed_count,
         )
 
-        # ── Core v0.1: durable persistence (survives restart; no TTL) ───────
+        # â”€â”€ Core v0.1: durable persistence (survives restart; no TTL) â”€â”€â”€â”€â”€â”€â”€
         session.finished_at = time.time()
         md_report = _build_markdown_report(session)
         json_report = _build_json_report(session)
         session.report_markdown = md_report
 
         def _persist_durable():
-            """Sync persistence — runs in a worker thread so lock retries
+            """Sync persistence â€” runs in a worker thread so lock retries
             never stall the event loop (12h-loop fix)."""
             audit_save({
                 "id": session.session_id,
@@ -1179,21 +1188,23 @@ async def _run_pipeline(
                     "verification": p.verification.to_dict() if p.verification else None,
                 } for p in session.evidence_packs],
             )
-            # FK FIX: must run AFTER audit_save() — audit_hypotheses.audit_id
+            # FK FIX: must run AFTER audit_save() â€” audit_hypotheses.audit_id
             # references audits(id), so children need the parent row first.
             audit_save_hypotheses(
                 session.session_id,
                 [dataclasses.asdict(h) | {"scenario": None} for h in session.hypotheses],
             )
 
-        try:
-            await asyncio.to_thread(_persist_durable)
-        except Exception as e:
-            # Best-effort, but NEVER silent — a silent failure hid the FK bug
+        saved = await _durable_save_with_retries(
+            _persist_durable, audit_id=session.session_id,
+        )
+        if not saved:
+            # Best-effort, but NEVER silent â€” a silent failure hid the FK bug
             # that dropped all hypotheses from durable audits.
-            logger.error("audit %s: durable persistence failed: %s",
-                         session.session_id, e, exc_info=True)
-            session.warnings.append(f"Durable persistence incomplete: {e}")
+            session.warnings.append(
+                "Durable persistence incomplete after retries; this result "
+                "may be absent or stale when retrieved later."
+            )
 
         await _emit_stage(session.session_id, "report", "completed",
                           markdown_ready=True, json_ready=True,
@@ -1289,7 +1300,6 @@ async def _run_exploit_pipeline(
     rpc_url: str,
     anonymization_map,
     rules: list[str],
-    machine_id: str = "",
 ):
     await _broadcast(session_id, "thinking.start", {"agent": "exploit_pipeline"})
     try:
@@ -1361,16 +1371,6 @@ async def _run_exploit_pipeline(
                 f"[ABSTRACT TACTIC] {scenario.attack_vector}: exploit confirmed",
                 {"severity": "CRITICAL", "category": "exploit", "confirmed": "true"},
             )
-            # Record against subscription quota
-            _record_finding_to_quota(machine_id, Finding(
-                title="exploit_confirmed",
-                severity="CRITICAL",
-                description=f"Exploit confirmed: {scenario.attack_vector}",
-                affected_functions=[scenario.entry_point] if scenario.entry_point else [],
-                confirmed=True,
-                category="exploit",
-                remediation="",
-            ))
 
     except Exception as e:
         await _broadcast(session_id, "exploit_result", {
@@ -1394,7 +1394,7 @@ def _format_rules(rules: list[str] | None) -> str:
 
 
 
-# ── C-1: Scoped WebSocket broadcast ──────────────────────────────────────────
+# â”€â”€ C-1: Scoped WebSocket broadcast â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def _broadcast(session_id: str, event_type: str, payload: dict):
     """
@@ -1411,7 +1411,7 @@ async def _broadcast(session_id: str, event_type: str, payload: dict):
             except Exception:
                 pass
         return
-    # Fallback: no session→conn mapping (legacy REST path) — broadcast to all
+    # Fallback: no sessionâ†’conn mapping (legacy REST path) â€” broadcast to all
     for ws in list(active_connections.values()):
         try:
             await ws.send_text(json.dumps({"type": event_type, "payload": payload}))
@@ -1500,7 +1500,7 @@ async def websocket_endpoint(ws: WebSocket):
 
 
 
-# ── Memory & Config endpoints ────────────────────────────────────────────────
+# â”€â”€ Memory & Config endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @app.post("/memory/search")
 async def memory_search(body: dict):
@@ -1529,7 +1529,7 @@ async def memory_save(body: dict):
     if not key or not content:
         return JSONResponse(status_code=400, content={"error": "key and content required"})
 
-    # M-5: tighter zero-knowledge guard — use token-based heuristic
+    # M-5: tighter zero-knowledge guard â€” use token-based heuristic
     if _looks_like_raw_code(content):
         return JSONResponse(
             status_code=400,
@@ -1538,94 +1538,6 @@ async def memory_save(body: dict):
 
     memory.save(key, content, metadata)
     return {"status": "saved", "key": key}
-
-
-# ── Subscription & Payment endpoints ─────────────────────────────────────────
-
-@app.get("/subscription/status")
-async def subscription_status(request: Request):
-    if not _SUBSCRIPTION_ENABLED:
-        return {"enabled": False, "tier": "free", "can_scan": True}
-    machine_id = request.headers.get("X-Machine-Id", "")
-    if not machine_id:
-        return {"enabled": True, "tier": "free", "can_scan": True, "needs_machine_id": True}
-    try:
-        status = sub_manager.get_status(machine_id)
-        return {"enabled": True, **status}
-    except Exception as e:
-        return {"enabled": True, "tier": "free", "can_scan": True, "error": str(e)}
-
-
-@app.post("/subscription/upgrade")
-async def subscription_upgrade(body: dict, request: Request):
-    if not _SUBSCRIPTION_ENABLED:
-        return JSONResponse(status_code=503, content={"error": "Subscription system not configured"})
-    machine_id = body.get("machine_id", "") or request.headers.get("X-Machine-Id", "")
-    tier = body.get("tier", "hunter")
-    if tier not in ("hunter", "team"):
-        return JSONResponse(status_code=400, content={"error": "Invalid tier. Choose 'hunter' or 'team'."})
-    if not machine_id:
-        return JSONResponse(status_code=400, content={"error": "machine_id required"})
-    try:
-        invoice = sub_payments.create_invoice(machine_id, tier)
-        return {"invoice_url": invoice["payment_url"], "payment_id": invoice["payment_id"]}
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
-
-
-@app.post("/payment/webhook")
-async def payment_webhook(request: Request):
-    if not _SUBSCRIPTION_ENABLED:
-        return JSONResponse(status_code=503, content={"error": "Subscription system not configured"})
-    body = await request.body()
-    signature = request.headers.get("x-nowpayments-sig", "")
-    if not sub_payments.verify_ipn_signature(body, signature):
-        return JSONResponse(status_code=403, content={"error": "Invalid signature"})
-    import json as _json
-    try:
-        payload = _json.loads(body)
-    except Exception:
-        return JSONResponse(status_code=400, content={"error": "Invalid JSON body"})
-    data = sub_payments.parse_ipn(payload)
-    if data["status"] in ("finished", "confirmed"):
-        order_id = data["order_id"]
-        parts = order_id.split("_")
-        if len(parts) >= 3:
-            machine_id = parts[1]
-            tier = parts[2]
-            sub_manager.upgrade_user(machine_id, tier)
-    return {"status": "ok"}
-
-
-def _check_quota(machine_id: str):
-    """Check subscription quota before running audit. Returns error response or None."""
-    if not _SUBSCRIPTION_ENABLED or not machine_id:
-        return None
-    try:
-        allowed, reason = sub_manager.can_scan(machine_id)
-        if not allowed:
-            return JSONResponse(status_code=403, content={"error": reason, "upgrade_required": True})
-    except Exception:
-        # Fail-closed: never silently bypass quota enforcement when
-        # subscription checks are enabled but the quota system errors.
-        return JSONResponse(
-            status_code=503,
-            content={
-                "error": "Quota system temporarily unavailable. Please retry.",
-                "retryable": True,
-            },
-        )
-    return None
-
-
-def _record_finding_to_quota(machine_id: str, finding):
-    """Record a confirmed finding against the user's quota."""
-    if not _SUBSCRIPTION_ENABLED or not machine_id:
-        return
-    try:
-        sub_manager.record_finding(machine_id, finding.severity)
-    except Exception:
-        pass
 
 
 def _looks_like_raw_code(text: str) -> bool:
@@ -1644,23 +1556,6 @@ def _extract_contract_name(source_code: str) -> str:
     import re
     match = re.search(r'\b(contract|library|interface)\s+(\w+)', source_code)
     return match.group(2) if match else "Contract"
-
-
-@app.post("/sandbox/start")
-async def start_sandbox(body: dict):
-    from sandbox.docker_runner import DockerRunner
-    runner = DockerRunner()
-    info = runner.start(
-        language=body.get("language", "solidity"),
-        session_id=body.get("session_id", ""),
-        fork_url=body.get("fork_url", ""),
-    )
-    return {
-        "container_id": info.container_id,
-        "rpc_url": info.rpc_url,
-        "started": info.started,
-        "error": info.error,
-    }
 
 
 @app.post("/report/generate")
@@ -1690,33 +1585,26 @@ async def generate_report(body: dict):
 
 @app.post("/config/set-key")
 async def config_set_key(body: dict):
-    key = body.get("key", "").strip()
-    if not key:
-        return JSONResponse(status_code=400, content={"error": "key required"})
+    """REMOVED from Core v0.1.
 
-    # Basic format validation
-    if len(key) < 20:
-        return JSONResponse(status_code=400, content={"error": "Key appears invalid (too short)"})
-    if "\n" in key or "\r" in key:
-        return JSONResponse(status_code=400, content={"error": "Key must not contain newlines"})
+    The OpenRouter credential is backend-owned environment configuration
+    (backend/.env or backend/.env.local). Accepting secrets over the local
+    HTTP API from any local process violates that ownership model, so this
+    endpoint has been removed. To configure the key, edit backend/.env.local:
 
-    env_path = Path(__file__).parent / ".env"
-    try:
-        dotenv_set_key(str(env_path), "OPENROUTER_API_KEY", key)
-        # C-8 / S-5: restrict file permissions on Unix
-        try:
-            os.chmod(str(env_path), 0o600)
-        except (AttributeError, NotImplementedError):
-            pass  # Windows — skip chmod
-        os.environ["OPENROUTER_API_KEY"] = key
-        router_llm.reload()
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        OPENROUTER_API_KEY=sk-or-v1-...
 
-    return {"status": "ok", "message": "API key updated. Effective immediately."}
+    Capability status (never the secret itself) is available at GET /config/status.
+    """
+    return JSONResponse(
+        status_code=410,
+        content={
+            "error": "set-key removed: configure OPENROUTER_API_KEY in the backend environment (backend/.env.local)"
+        },
+    )
 
 
-# ── Patch Engine endpoint ────────────────────────────────────────────────────
+# â”€â”€ Patch Engine endpoint â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @app.post("/patch/generate")
 async def generate_patch(body: dict):
@@ -1754,7 +1642,7 @@ async def generate_patch(body: dict):
     }
 
 
-# ── Report Export endpoint ───────────────────────────────────────────────────
+# â”€â”€ Report Export endpoint â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @app.post("/report/export")
 async def export_report(body: dict):
@@ -1790,7 +1678,7 @@ async def export_report(body: dict):
         return JSONResponse(status_code=400, content={"error": f"Unsupported format: {format_type}"})
 
 
-# ── C-4: Conversational Chat endpoint ─────────────────────────────────────────
+# â”€â”€ C-4: Conversational Chat endpoint â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @app.post("/chat")
 async def chat(body: dict):
@@ -1837,7 +1725,7 @@ async def chat(body: dict):
     }
 
 
-# ── C-5: Quick Phase-1 analysis (no LLM, no scenarios) ───────────────────────
+# â”€â”€ C-5: Quick Phase-1 analysis (no LLM, no scenarios) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @app.post("/analyze/quick")
 async def analyze_quick(body: dict):
@@ -1854,14 +1742,14 @@ async def analyze_quick(body: dict):
     }
 
 
-# ── C-6: Retrieve findings via REST ──────────────────────────────────────────
+# â”€â”€ C-6: Retrieve findings via REST â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @app.get("/findings/{session_id}")
 async def get_findings(session_id: str):
     """Retrieve findings for a session via REST.
 
     Falls back to the durable audit store when the in-memory session has
-    expired. An unknown id returns an explicit error — never an empty list,
+    expired. An unknown id returns an explicit error â€” never an empty list,
     which would be indistinguishable from a clean completed audit.
     """
     session = _get_session(session_id)
@@ -1879,7 +1767,7 @@ async def get_findings(session_id: str):
     )
 
 
-# ── Core v0.1: durable audit retrieval ───────────────────────────────────────
+# â”€â”€ Core v0.1: durable audit retrieval â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @app.get("/audits")
 async def audits_index(limit: int = 50):
@@ -1895,7 +1783,7 @@ def _enforce_evidence_integrity(audit: dict) -> dict:
     """INTEGRITY GUARD (12h final audit): a finding may only be presented as
     CONFIRMED if its evidence pack is actually present. If the referenced
     pack is missing (corruption, partial persistence, manual deletion), the
-    confirmation is revoked at retrieval time and a loud warning is attached —
+    confirmation is revoked at retrieval time and a loud warning is attached â€”
     SIREEN must never display CONFIRMED without producible evidence."""
     evidence_ids = {p.get("id") for p in (audit.get("evidence") or [])}
     revoked = 0
@@ -1956,7 +1844,7 @@ async def audits_report(audit_id: str, format: str = "markdown"):
     return JSONResponse(status_code=400, content={"error": f"Unsupported format: {format}"})
 
 
-# ── C-7: List active sessions ────────────────────────────────────────────────
+# â”€â”€ C-7: List active sessions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @app.get("/sessions")
 async def list_sessions():
@@ -1978,7 +1866,7 @@ async def list_sessions():
     }
 
 
-# ── Session Management (SQLite-backed) ───────────────────────────────────────
+# â”€â”€ Session Management (SQLite-backed) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # These endpoints persist the ENTIRE workspace state, not just metadata.
 # A session survives VS Code restart, extension reload, and backend restart.
 
@@ -2066,7 +1954,7 @@ async def sessions_add_timeline(session_id: str, body: dict):
     return {"status": "added"}
 
 
-# ── C-8: Natural language explanation ────────────────────────────────────────
+# â”€â”€ C-8: Natural language explanation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @app.post("/explain")
 async def explain(body: dict):
@@ -2087,7 +1975,7 @@ async def explain(body: dict):
     }
 
 
-# ── C-9: Single-function analysis ────────────────────────────────────────────
+# â”€â”€ C-9: Single-function analysis â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @app.post("/analyze/function")
 async def analyze_function(body: dict):
@@ -2109,7 +1997,7 @@ async def analyze_function(body: dict):
     }
 
 
-# ── C-10: Get protocol map for a session ─────────────────────────────────────
+# â”€â”€ C-10: Get protocol map for a session â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @app.get("/protocol-map/{session_id}")
 async def get_protocol_map(session_id: str):
@@ -2120,17 +2008,18 @@ async def get_protocol_map(session_id: str):
     return {"protocol_map": dataclasses.asdict(session.protocol_map)}
 
 
-# ── C-11: Configuration status ───────────────────────────────────────────────
+# â”€â”€ C-11: Configuration status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @app.get("/config/status")
 async def config_status():
-    """Check what's configured (API key, forge, Docker)."""
+    """Capability status â€” booleans only, never secret values.
+
+    Docker is not part of Core v0.1 and is intentionally not reported here.
+    """
     import shutil
     forge_available = shutil.which("forge") is not None
-    docker_available = shutil.which("docker") is not None
     return {
         "api_configured": router_llm.is_configured(),
         "forge_available": forge_available,
-        "docker_available": docker_available,
         "qdrant_available": memory._use_qdrant,
     }

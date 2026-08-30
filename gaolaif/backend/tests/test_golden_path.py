@@ -16,7 +16,6 @@ import pytest
 from models.types import (
     AttackScenario, Hypothesis, SimulationProof, TerminalState,
 )
-from phases.phase2_scenarios import FALLBACK_SCENARIO  # noqa: F401  (sanity import)
 from phases.phase3_simulate import phase3_simulate, _find_forge
 from verification.honest_signal import HonestSignal
 

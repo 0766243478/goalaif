@@ -13,7 +13,7 @@ import * as React from 'react';
 function makeHarness(consumerCount: number) {
   const dispatchCalls: string[] = [];
   let dispatchRef: React.Dispatch<unknown> | null = null;
-  let stateRef: SireenState | null = null;
+  const stateRef: { value: SireenState | null } = { value: null };
 
   const Owner = () => {
     useMessageBus();
@@ -35,7 +35,9 @@ function makeHarness(consumerCount: number) {
         dispatch(action as never);
       };
     }, [dispatch]);
-    stateRef = state;
+    React.useEffect(() => {
+      stateRef.value = state;
+    }, [state]);
     return null;
   };
 
@@ -48,7 +50,7 @@ function makeHarness(consumerCount: number) {
       ))}
     </StoreProvider>
   );
-  return { tree, dispatchCalls, getDispatch: () => dispatchRef, getState: () => stateRef };
+  return { tree, dispatchCalls, getDispatch: () => dispatchRef, getState: () => stateRef.value };
 }
 
 function postMessage(command: string, payload: Record<string, unknown> = {}) {
@@ -205,6 +207,21 @@ describe('useMessageBus / useSend — single-listener invariant', () => {
     expect(messages[messages.length - 1]?.content).toContain('fetch failed');
   });
 
+  it('activates a newly created persistent session and opens its workspace', () => {
+    const { tree, getState } = makeHarness(0);
+    render(tree);
+
+    postMessage('sireen.session.created', {
+      id: 'session-regression-1',
+      name: 'Regression session',
+    });
+
+    expect(getState()?.activeSessionId).toBe('session-regression-1');
+    expect(getState()?.activeSessionName).toBe('Regression session');
+    expect(getState()?.sessionView).toBe('workspace');
+    expect(getState()?.activeView).toBe('overview');
+  });
+
   // ── Task 13 negative tests: SIREEN UI must NOT lie ────────────────────────
 
   it('does NOT show success when completion payload lacks terminal_state (malformed result)', () => {
@@ -234,7 +251,7 @@ describe('useMessageBus / useSend — single-listener invariant', () => {
     expect(getState()?.auditPhase).not.toBe('complete');
   });
 
-  it('zero findings with UNVERIFIED terminal state shows incomplete, never clean/success', () => {
+  it('zero findings with UNVERIFIED terminal state is a completed heuristic result, not an error', () => {
     const { tree, getState } = makeHarness(0);
     render(tree);
 
@@ -249,13 +266,69 @@ describe('useMessageBus / useSend — single-listener invariant', () => {
         findings: [],
         evidence: [],
         report: '',
-        warnings: [],
+        warnings: ['Model verification is unavailable.'],
       },
     });
 
     expect(getState()?.auditPhase).toBe('incomplete');
+    expect(getState()?.auditPhase).not.toBe('error');
     const messages = getState()?.chatMessages || [];
     expect(messages.some(m => m.content.includes('UNVERIFIED'))).toBe(true);
+    expect(messages.some(m => m.content.includes('Configure a backend model'))).toBe(true);
+  });
+
+  it('keeps a zero-finding UNVERIFIED completion visible when a stale audit error follows it', () => {
+    const { tree, getState } = makeHarness(0);
+    render(tree);
+
+    postMessage('sireen.audit_complete', {
+      terminal_state: 'unverified',
+      findings: [],
+      evidence: [],
+      report: '',
+      warnings: ['Model verification is unavailable.'],
+    });
+    postMessage('sireen.audit_error', { message: 'stale transport failure' });
+
+    expect(getState()?.auditPhase).toBe('incomplete');
+    expect(getState()?.auditPhase).not.toBe('error');
+    expect(getState()?.chatMessages.some(message => message.content.includes('stale transport failure'))).toBe(false);
+  });
+
+  it('keeps a zero-finding UNVERIFIED completion visible when a stale router error follows it', () => {
+    const { tree, getState } = makeHarness(0);
+    render(tree);
+
+    postMessage('sireen.audit_complete', {
+      terminal_state: 'unverified',
+      findings: [],
+      evidence: [],
+      report: '',
+      warnings: ['Model verification is unavailable.'],
+    });
+    postMessage('sireen.error', {
+      command: 'sireen.report.generate',
+      error: 'stale REST failure',
+    });
+
+    expect(getState()?.auditPhase).toBe('incomplete');
+    expect(getState()?.auditPhase).not.toBe('error');
+    expect(getState()?.chatMessages.some(message => message.content.includes('stale REST failure'))).toBe(false);
+  });
+
+  it('zero findings with CLEAN_WITH_COVERAGE terminal state completes cleanly', () => {
+    const { tree, getState } = makeHarness(0);
+    render(tree);
+
+    postMessage('sireen.audit_complete', {
+      terminal_state: 'clean_with_coverage',
+      findings: [],
+      evidence: [],
+      report: '',
+      warnings: [],
+    });
+
+    expect(getState()?.auditPhase).toBe('complete');
   });
 });
   it('stamps every finding with the durable audit_id so the Evidence Pack is reachable (Phase 5)', () => {

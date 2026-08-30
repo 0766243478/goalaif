@@ -16,7 +16,6 @@ const SLASH_COMMANDS = [
   { cmd: '/exploit', desc: 'Generate exploit PoC with hypothesis' },
   { cmd: '/patch', desc: 'Generate fix for specific finding' },
   { cmd: '/report', desc: 'Generate bug bounty report' },
-  { cmd: '/search', desc: 'Search memory for similar patterns' },
   { cmd: '/explain', desc: 'Explain code or pattern' },
   { cmd: '/fuzz', desc: 'Run fuzz testing' },
   { cmd: '/invariant', desc: 'Generate invariant tests' },

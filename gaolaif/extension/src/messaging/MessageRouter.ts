@@ -74,13 +74,6 @@ export class MessageRouter {
           const findings = (payload as Record<string, unknown>)?.findings;
           if (findings && Array.isArray(findings) && findings.length > 0) {
             this._onFindingsCallback(findings as SireenEvent['payload'][]);
-          } else {
-            // Zero-finding rule: Never fabricate success. If no findings,
-            // emit AUDIT_INCOMPLETE instead of hiding the failure.
-            this.sidebarProvider.postMessageToWebview({
-              command: 'sireen.audit.incomplete',
-              payload: { reason: findings ? (Array.isArray(findings) && findings.length === 0 ? 'No findings produced' : 'Analysis error') : 'No findings produced' },
-            });
           }
         }
         // Forward timeline event to store for UI display
@@ -160,6 +153,41 @@ export class MessageRouter {
   }
 
   private registerDefaults() {
+    this.on('sireen.backend.configure', async () => {
+      const backendPath = vscode.workspace
+        .getConfiguration('gaolaif')
+        .get<string>('backendPath', '');
+
+      // This command is invoked from the disconnected session screen. A path
+      // may have been configured after extension activation, so retry startup
+      // in this live extension host instead of making the user reload VS Code.
+      if (backendPath) {
+        try {
+          await this.backendClient.startBackend();
+        } catch {
+          // Fall through to the backend path setting below.
+        }
+        if (this.backendClient.connected) {
+          this.sidebarProvider.postMessageToWebview({
+            command: 'sireen.connection.status',
+            payload: { status: 'connected' },
+          });
+          await this.route({
+            command: 'sireen.session.list',
+            payload: { status: 'active' },
+          });
+          return;
+        }
+      }
+
+      // No configured path, or the configured backend could not start: take
+      // the user directly to the setting that resolves the problem.
+      await vscode.commands.executeCommand(
+        'workbench.action.openSettings',
+        'gaolaif.backendPath'
+      );
+    });
+
     this.on('sireen.media.request', async () => {
       this.sidebarProvider.sendMediaConfig();
     });
@@ -269,14 +297,6 @@ export class MessageRouter {
           command: 'sireen.report.generated',
           payload: result,
         });
-      } else if (command === 'search') {
-        const result = await this.backendClient.post('/memory/search', {
-          query: args,
-        });
-        this.sidebarProvider.postMessageToWebview({
-          command: 'sireen.memory.results',
-          payload: result,
-        });
       } else if (command === 'explain') {
         const result = await this.backendClient.post('/explain', {
           code: selectedCode,
@@ -292,14 +312,6 @@ export class MessageRouter {
           },
         });
       }
-    });
-
-    this.on('sireen.memory.search', async (p) => {
-      const result = await this.backendClient.post('/memory/search', p);
-      this.sidebarProvider.postMessageToWebview({
-        command: 'sireen.memory.results',
-        payload: result,
-      });
     });
 
     this.on('sireen.findings.jumpTo', async (p) => {
@@ -411,11 +423,33 @@ export class MessageRouter {
       await vscode.window.showTextDocument(doc, { preview: true });
     });
 
-    this.on('sireen.settings.setApiKey', async (p) => {
-      const result = await this.backendClient.post('/config/set-key', { key: (p as Record<string, unknown>).key });
+    // Backend status: the extension host owns backend communication. The
+    // OpenRouter credential itself lives ONLY in the backend environment
+    // (backend/.env / backend/.env.local) — it is never sent to, stored in,
+    // or requested from the webview. We surface only capability booleans.
+    this.on('sireen.backend.status', async () => {
+      let status: { backend: 'connected' | 'unavailable'; llm: 'available' | 'unavailable'; forge: 'available' | 'unavailable' } = {
+        backend: 'unavailable',
+        llm: 'unavailable',
+        forge: 'unavailable',
+      };
+      try {
+        const [health, config] = await Promise.all([
+          this.backendClient.get('/health'),
+          this.backendClient.get('/config/status'),
+        ]);
+        status = {
+          backend: 'connected',
+          llm: !!(config as Record<string, unknown>)?.api_configured ? 'available' : 'unavailable',
+          forge: !!(config as Record<string, unknown>)?.forge_available ? 'available' : 'unavailable',
+        };
+      } catch {
+        // Backend down — keep the unavailable status; no exception details
+        // are forwarded to the webview.
+      }
       this.sidebarProvider.postMessageToWebview({
-        command: 'sireen.apiKey.status',
-        payload: { configured: (result as Record<string, unknown>)?.status === 'ok' },
+        command: 'sireen.backend.status',
+        payload: { status },
       });
     });
 
@@ -426,50 +460,11 @@ export class MessageRouter {
       });
     });
 
-    this.on('sireen.apiKey.status', async () => {
-      try {
-        const health = await this.backendClient.get('/health');
-        const configured = !!(health as Record<string, unknown>)?.models_configured;
-        this.sidebarProvider.postMessageToWebview({
-          command: 'sireen.apiKey.status',
-          payload: { configured },
-        });
-      } catch {
-        this.sidebarProvider.postMessageToWebview({
-          command: 'sireen.apiKey.status',
-          payload: { configured: false },
-        });
-      }
-    });
-
     this.on('sireen.setRightPanel', async (p) => {
       this.sidebarProvider.postMessageToWebview({
         command: 'sireen.setRightPanel',
         payload: p,
       });
-    });
-
-    this.on('sireen.sandbox.start', async (p) => {
-      const config = vscode.workspace.getConfiguration('gaolaif');
-      const rpcUrl = ((p as Record<string, unknown>).rpcUrl as string) || config.get('defaultRpcEvm', 'https://eth.llamarpc.com');
-
-      const result = await this.backendClient.post('/sandbox/start', {
-        language: 'solidity',
-        fork_url: rpcUrl,
-        session_id: `session-${Date.now()}`,
-      });
-
-      if (result?.rpc_url) {
-        this.sidebarProvider.postMessageToWebview({
-          command: 'sireen.sandbox.started',
-          payload: { rpc_url: result.rpc_url },
-        });
-      } else if (result?.container_id) {
-        this.sidebarProvider.postMessageToWebview({
-          command: 'sireen.sandbox.started',
-          payload: { container_id: result.container_id },
-        });
-      }
     });
 
     // �"?�"? Session Management (SQLite-backed) �"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?

@@ -20,18 +20,6 @@ export interface Patch {
   why_best?: string;
 }
 
-export interface MemoryEntry {
-  text: string;
-  score?: number;
-  type?: string;
-  severity?: string;
-  warning?: string;
-  suggestion?: string;
-  confidence?: number;
-  idea?: string;
-  degraded?: boolean;
-}
-
 export interface PoCResult {
   confirmed: boolean;
   poc_code: string;
@@ -63,12 +51,7 @@ export interface FlowEdge {
   token: string;
 }
 
-export interface TacticEntry extends MemoryEntry {
-  attack_vector?: string;
-  impact?: string;
-}
-
-/** Canonical event schema — one source of truth for all SIREEN communication.
+/**
  * Every event flows: Frontend → MessageRouter → Backend → SQLite → Frontend restoration.
  * No ad-hoc message formats. All events have event_id, session_id, timestamp, type, status.
  */

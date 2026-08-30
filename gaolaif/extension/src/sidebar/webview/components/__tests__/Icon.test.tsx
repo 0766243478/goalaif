@@ -49,7 +49,7 @@ describe('Icon', () => {
   it('renders all navigation icon names without error', () => {
     const navIcons = [
       'overview', 'findings', 'exploits',
-      'memory', 'notes', 'tasks', 'simulation', 'settings', 'brand',
+      'notes', 'tasks', 'settings', 'brand',
     ] as const;
     navIcons.forEach((name) => {
       const { container } = render(<Icon name={name} />);

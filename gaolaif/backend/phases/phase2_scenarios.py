@@ -12,16 +12,6 @@ For each scenario, return a JSON array of objects with keys:
 - name, description, entry_point, attack_vector, preconditions, exploit_steps, estimated_impact, scenario_type
 Return ONLY the JSON array, no markdown formatting or extra text."""
 
-FALLBACK_SCENARIO = AttackScenario(
-    name="Reentrancy on external call",
-    description="Contract uses external calls. Attacker may re-enter and drain funds.",
-    entry_point="withdraw",
-    attack_vector="reentrancy",
-    preconditions=["Contract uses low-level call"],
-    exploit_steps=["Deploy attacker contract", "Call entry point", "Re-enter via fallback"],
-    estimated_impact="Full drain of ETH balance",
-    scenario_type="reentrancy")
-
 def _function_bodies(source_code: str) -> dict:
     """Map each function name to its brace-balanced body text.
 
@@ -141,7 +131,7 @@ def _generate_heuristic_defaults(source_code: str, protocol_map: ProtocolMap):
             exploit_steps=["Miner selects favorable block"],
             estimated_impact="Game draining", scenario_type="weak_randomness"))
 
-    return scenarios or [FALLBACK_SCENARIO]
+    return scenarios
 
 
 @dataclass

@@ -1,11 +1,11 @@
 import { createContext, useContext, useReducer, useEffect, type ReactNode } from 'react';
 import { vscode } from '../vscodeApi';
-import type { SireenState, ViewId, Finding, ChatMessage, ThinkingStep, ChatContext, ExploitRecord, MemoryEntry, ResearchTask, ProactiveSuggestion, LogEntry, PatchResult, ProtocolState, ContractFile, AuditProgress, AuditPhase, SessionMeta, WorkspaceState, TimelineEvent } from './types';
+import type { SireenState, ViewId, Finding, ChatMessage, ThinkingStep, ChatContext, ExploitRecord, ResearchTask, ProactiveSuggestion, PatchResult, ProtocolState, ContractFile, AuditProgress, AuditPhase, SessionMeta, WorkspaceState, TimelineEvent } from './types';
 
 type Action =
   | { type: 'SET_VIEW'; view: ViewId }
   | { type: 'SET_CONNECTION'; status: SireenState['connectionStatus'] }
-  | { type: 'SET_API_KEY'; set: boolean }
+  | { type: 'SET_BACKEND_STATUS'; status: SireenState['backendStatus'] }
   | { type: 'SET_PROTOCOL'; protocol: ProtocolState | null }
   | { type: 'SET_CONTRACTS'; contracts: ContractFile[] }
   | { type: 'ADD_FINDINGS'; findings: Finding[] }
@@ -18,25 +18,19 @@ type Action =
   | { type: 'SET_THINKING'; thinking: boolean; steps?: ThinkingStep[] }
   | { type: 'SET_CHAT_CONTEXT'; context: Partial<ChatContext> }
   | { type: 'ADD_EXPLOIT'; exploit: ExploitRecord }
-  | { type: 'SET_MEMORY'; entries: MemoryEntry[] }
-  | { type: 'SET_MEMORY_COLLECTION'; collection: string }
   | { type: 'SET_NOTES'; content: string }
   | { type: 'ADD_TASK'; task: ResearchTask }
   | { type: 'TOGGLE_TASK'; id: string }
   | { type: 'DELETE_TASK'; id: string }
   | { type: 'ADD_SUGGESTION'; suggestion: ProactiveSuggestion }
   | { type: 'DISMISS_SUGGESTION'; id: string }
-  | { type: 'SET_SANDBOX'; ready: boolean }
-  | { type: 'ADD_SIM_LOG'; entry: LogEntry }
   | { type: 'SET_SESSION'; id: string | null; name?: string | null }
   | { type: 'SET_SESSION_LIST'; sessions: SessionMeta[] }
   | { type: 'SET_SESSION_VIEW'; view: 'manager' | 'workspace' }
   | { type: 'RESTORE_WORKSPACE'; state: WorkspaceState }
   | { type: 'SET_PATCH'; result: PatchResult | null }
   | { type: 'SET_RIGHT_PANEL'; open: boolean }
-  | { type: 'SET_BOTTOM_PANEL'; open: boolean }
   | { type: 'SET_RIGHT_PANEL_TAB'; tab: SireenState['rightPanelTab'] }
-  | { type: 'SET_BOTTOM_PANEL_TAB'; tab: SireenState['bottomPanelTab'] }
   | { type: 'SET_AUDIT_PROGRESS'; progress: AuditProgress | null }
   | { type: 'SET_AUDIT_PHASE'; phase: AuditPhase }
   | { type: 'SET_CONTRACT_CODE'; code: string; filePath: string }
@@ -45,12 +39,10 @@ type Action =
 
 const initialState: SireenState = {
   connectionStatus: 'connecting',
-  apiKeySet: null,
+  backendStatus: null,
   activeView: 'overview',
   rightPanelTab: 'chat',
-  bottomPanelTab: 'logs',
   rightPanelOpen: true,
-  bottomPanelOpen: false,
   protocol: null,
   contracts: [],
   findings: [],
@@ -60,12 +52,8 @@ const initialState: SireenState = {
   isThinking: false,
   thinkingSteps: [],
   exploits: [],
-  memoryEntries: [],
-  memoryCollection: 'patterns',
   researchNotes: '',
   tasks: [],
-  sandboxReady: false,
-  simulationLog: [],
   suggestions: [],
   activeSessionId: null,
   activeSessionName: null,
@@ -84,8 +72,8 @@ function reducer(state: SireenState, action: Action): SireenState {
       return { ...state, activeView: action.view };
     case 'SET_CONNECTION':
       return { ...state, connectionStatus: action.status };
-    case 'SET_API_KEY':
-      return { ...state, apiKeySet: action.set };
+    case 'SET_BACKEND_STATUS':
+      return { ...state, backendStatus: action.status };
     case 'SET_PROTOCOL':
       return { ...state, protocol: action.protocol };
     case 'SET_CONTRACTS':
@@ -118,10 +106,6 @@ function reducer(state: SireenState, action: Action): SireenState {
       return { ...state, chatContext: { ...state.chatContext, ...action.context } };
     case 'ADD_EXPLOIT':
       return { ...state, exploits: [...state.exploits, action.exploit] };
-    case 'SET_MEMORY':
-      return { ...state, memoryEntries: action.entries };
-    case 'SET_MEMORY_COLLECTION':
-      return { ...state, memoryCollection: action.collection };
     case 'SET_NOTES':
       return { ...state, researchNotes: action.content };
     case 'ADD_TASK':
@@ -134,10 +118,6 @@ function reducer(state: SireenState, action: Action): SireenState {
       return { ...state, suggestions: [...state.suggestions, action.suggestion] };
     case 'DISMISS_SUGGESTION':
       return { ...state, suggestions: state.suggestions.filter(s => s.id !== action.id) };
-    case 'SET_SANDBOX':
-      return { ...state, sandboxReady: action.ready };
-    case 'ADD_SIM_LOG':
-      return { ...state, simulationLog: [...state.simulationLog, action.entry] };
     case 'SET_SESSION':
       return { ...state, activeSessionId: action.id, activeSessionName: action.name ?? state.activeSessionName };
     case 'SET_SESSION_LIST':
@@ -162,22 +142,14 @@ function reducer(state: SireenState, action: Action): SireenState {
         activeView: (ws.activeView as ViewId) ?? state.activeView,
         rightPanelTab: (ws.rightPanelTab as 'chat' | 'reasoning') ?? state.rightPanelTab,
         rightPanelOpen: ws.rightPanelOpen ?? state.rightPanelOpen,
-        bottomPanelOpen: ws.bottomPanelOpen ?? state.bottomPanelOpen,
-        // Don't restore apiKeySet from workspace — always check backend at runtime
-        // Handle null explicitly: if workspace saved null, treat as "not configured yet"
-        apiKeySet: ws.apiKeySet !== undefined ? (ws.apiKeySet === null ? false : (ws.apiKeySet as boolean)) : state.apiKeySet,
       };
     }
     case 'SET_PATCH':
       return { ...state, patchResult: action.result };
     case 'SET_RIGHT_PANEL':
       return { ...state, rightPanelOpen: action.open };
-    case 'SET_BOTTOM_PANEL':
-      return { ...state, bottomPanelOpen: action.open };
     case 'SET_RIGHT_PANEL_TAB':
       return { ...state, rightPanelTab: action.tab };
-    case 'SET_BOTTOM_PANEL_TAB':
-      return { ...state, bottomPanelTab: action.tab };
     case 'SET_AUDIT_PROGRESS':
       return { ...state, auditProgress: action.progress };
     case 'SET_AUDIT_PHASE':
@@ -195,24 +167,20 @@ const PERSISTED_KEYS: (keyof SireenState)[] = [
   'activeView',
   'rightPanelTab',
   'rightPanelOpen',
-  'bottomPanelOpen',
   'findingsFilter',
   'researchNotes',
   'tasks',
   'chatMessages',
-  'memoryCollection',
   'activeSessionId',
   'activeSessionName',
   'sessionView',
   'connectionStatus',
-  'apiKeySet',
+  'backendStatus',
   'protocol',
   'contracts',
   'findings',
   'exploits',
   'thinkingSteps',
-  'sandboxReady',
-  'simulationLog',
   'suggestions',
   'auditProgress',
   'auditPhase',
@@ -256,15 +224,10 @@ export function StoreProvider({ children }: { children: ReactNode }): JSX.Elemen
           activeView: state.activeView,
           rightPanelTab: state.rightPanelTab,
           rightPanelOpen: state.rightPanelOpen,
-          bottomPanelOpen: state.bottomPanelOpen,
-          bottomPanelTab: state.bottomPanelTab,
           findingsFilter: state.findingsFilter,
-          memoryCollection: state.memoryCollection,
           suggestions: state.suggestions,
-          sandboxReady: state.sandboxReady,
-          simulationLog: state.simulationLog,
           connectionStatus: state.connectionStatus,
-          apiKeySet: state.apiKeySet,
+          backendStatus: state.backendStatus,
           auditProgress: state.auditProgress,
           auditPhase: state.auditPhase,
         };

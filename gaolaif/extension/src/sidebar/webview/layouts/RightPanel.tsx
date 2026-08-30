@@ -83,7 +83,7 @@ export function RightPanel() {
       {state.rightPanelTab === 'reasoning' && (
         <div style={{ flex: 1, overflow: 'auto', padding: 'var(--sireen-space-3)' }}>
           {state.thinkingSteps.length === 0 ? (
-            <EmptyState icon="memory" title="AI reasoning chain appears here" message="Messages are shown during audit execution" />
+            <EmptyState icon="overview" title="AI reasoning chain appears here" message="Messages are shown during audit execution" />
           ) : (
             <Stack gap={2}>
               {state.thinkingSteps.map((step, i) => (

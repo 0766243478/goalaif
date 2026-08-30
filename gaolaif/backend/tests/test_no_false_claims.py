@@ -164,3 +164,33 @@ def test_unknown_audit_is_explicit_404_shape(monkeypatch):
     except Exception:
         res = None
     assert res is None
+
+class TestUnverifiedFindingsWarning:
+    """SMK-001 regression: the needs_review warning must state the real cause.
+
+    Forge-ran-but-not-reproduced must NEVER be reported as 'execution
+    unavailable' - that misleads the human reviewer about what happened.
+    """
+
+    def test_forge_ran_but_not_reproduced_says_so(self):
+        from main import _unverified_findings_warning
+
+        msg = _unverified_findings_warning(2, forge_available=True)
+        assert "NOT confirmed" in msg
+        assert "Forge executed the PoCs" in msg
+        # The old misleading wording must be gone when Forge ran
+        assert "unavailable" not in msg
+
+    def test_forge_unavailable_says_so(self):
+        from main import _unverified_findings_warning
+
+        msg = _unverified_findings_warning(1, forge_available=False)
+        assert "execution unavailable" in msg
+
+    def test_both_demand_manual_triage(self):
+        from main import _unverified_findings_warning
+
+        for avail in (True, False):
+            msg = _unverified_findings_warning(3, forge_available=avail)
+            assert "needs review" in msg
+            assert "MUST be manually triaged" in msg

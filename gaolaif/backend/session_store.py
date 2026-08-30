@@ -13,6 +13,7 @@ Schema:
 """
 
 import json
+import random
 import sqlite3
 import time
 import uuid
@@ -36,26 +37,48 @@ def _get_db() -> sqlite3.Connection:
     return conn
 
 
-_LOCK_RETRY_DELAYS = (0.25, 0.5, 1.0, 2.0, 4.0)
+# Burst-hardened retry policy (SMOKE-BUG-001): three simultaneous audit
+# starts exhausted the old fixed ladder (~7.75s total) while completion-time
+# writers held the database lock, so the backend promised "started" for
+# audits it could not persist. Jitter desynchronises competing writers;
+# dual ceilings bound total wait (~30s) and spin attempts (when sleeps are
+# patched out in tests).
+_LOCK_RETRY_MAX_ELAPSED_S = 30.0
+_LOCK_RETRY_MAX_ATTEMPTS = 40
+_LOCK_RETRY_BASE_S = 0.2
+_LOCK_RETRY_CAP_S = 1.5
 
 
 def _retry_locked(fn, *args, **kwargs):
     """Retry a DB operation on transient `database is locked` errors.
 
-    Root cause never fully identified (lock outlives the writer's own
-    commit+close); bounded retries make durability reliable regardless.
+    Root cause never fully identified (a lock outlives its writer's own
+    commit+close); bounded-but-generous retries make durability reliable
+    regardless. Non-lock OperationalErrors propagate immediately.
     """
     last: Exception | None = None
-    for delay in (0.0,) + _LOCK_RETRY_DELAYS:
-        if delay:
-            time.sleep(delay)
+    attempt = 0
+    t0 = _time.perf_counter()
+    while True:
         try:
             return fn(*args, **kwargs)
         except sqlite3.OperationalError as e:
             if "locked" not in str(e).lower():
                 raise
             last = e
-            _dblog.warning("DB locked, retrying (%ss): %s", delay, e)
+            attempt += 1
+            elapsed = _time.perf_counter() - t0
+            if elapsed >= _LOCK_RETRY_MAX_ELAPSED_S or attempt >= _LOCK_RETRY_MAX_ATTEMPTS:
+                _dblog.error(
+                    "DB locked — giving up after %d attempts / %.1fs: %s",
+                    attempt, elapsed, e,
+                )
+                break
+            delay = min(_LOCK_RETRY_CAP_S, _LOCK_RETRY_BASE_S * (2 ** (attempt - 1)))
+            delay *= 0.5 + random.random()   # jitter factor in [0.5, 1.5)
+            _dblog.warning("DB locked, retry %d in %.2fs (%.1fs elapsed): %s",
+                           attempt, delay, elapsed, e)
+            _time.sleep(delay)
     raise last
 
 
@@ -104,10 +127,10 @@ def init_db():
             -- thinkingSteps, auditProgress, auditPhase, protocol,
             -- contractCode, contractFilePath, activeView,
             -- rightPanelTab, rightPanelOpen, bottomPanelTab,
-            -- sessionView, findingsFilter, sandboxReady,
-            -- simulationLog, suggestions, memoryEntries,
-            -- memoryCollection, activeSessionId, activeSessionName,
-            -- sessionView, patchResult, apiKeySet, protocol,
+            -- sessionView, findingsFilter,
+            -- simulationLog, suggestions,
+            -- activeSessionId, activeSessionName,
+            -- sessionView, patchResult, backendStatus,
             -- connectionStatus, rightPanelOpen, bottomPanelOpen
         );
 

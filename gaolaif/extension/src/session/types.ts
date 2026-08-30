@@ -38,11 +38,6 @@ export interface ExploitRecord {
   confirmed: boolean;
 }
 
-export interface MemoryEntry {
-  key: string;
-  content: string;
-}
-
 export interface ResearchTask {
   id: string;
   title: string;
@@ -98,64 +93,15 @@ export interface SessionState {
   chatMessages: ChatMessage[];
   findings: Finding[];
   exploits: ExploitRecord[];
-  memoryEntries: MemoryEntry[];
   tasks: ResearchTask[];
   timeline: TimelineEvent[];
   activeView: ViewId;
   rightPanelTab: 'chat' | 'reasoning';
   rightPanelOpen: boolean;
-  bottomPanelOpen: boolean;
   connectionStatus: ConnectionStatus;
-  apiKeySet: boolean;
   protocol?: ProtocolState;
   contractCode: string;
   contractFilePath: string;
   researchNotes: string;
-  memoryCollection: string;
   sessionRoles?: SessionRole[];
 }
-
-// AI Provider specific types (defined here to avoid conflicts)
-export enum ProviderName {
-  Gemini = 'gemini',
-  OpenRouter = 'openrouter',
-  OpenAI = 'openai',
-  Anthropic = 'anthropic',
-  Local = 'local',
-}
-
-export interface AIHealthStatus {
-  healthy: boolean;
-  type: 'available' | 'quota_exhausted' | 'timeout' | 'error';
-  message: string;
-  lastChecked: number;
-}
-
-export interface AIProviderConfig {
-  apiKey: string;
-  model: string;
-  timeout?: number;
-  maxRetries?: number;
-  [key: string]: unknown;
-}
-
-export interface AIProviderManagerOptions {
-  primaryProvider?: ProviderName;
-  fallbackProvider?: ProviderName;
-  providers?: Record<ProviderName, AIProviderConfig>;
-  healthCheckInterval?: number;
-  maxRetries?: number;
-  timeout?: number;
-}
-
-export interface AIProvider {
-  name: ProviderName;
-  config: AIProviderConfig;
-  isAvailable: () => Promise<boolean>;
-  isHealthy: () => Promise<boolean>;
-  sendMessage: (messages: any, options?: any) => Promise<any>;
-  getQuotaStatus: () => Promise<{ remaining: number; resetTime: number | null }>;
-  healthCheck: () => Promise<AIHealthStatus>;
-  dispose?: () => Promise<void>;
-}
-

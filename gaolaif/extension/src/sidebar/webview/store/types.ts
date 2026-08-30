@@ -2,8 +2,8 @@ import type { ReactNode } from 'react';
 
 export type ViewId =
   | 'sessionManager' | 'overview' | 'findings'
-  | 'memory' | 'notes' | 'tasks'
-  | 'exploits' | 'simulation' | 'settings';
+  | 'notes' | 'tasks'
+  | 'exploits' | 'settings';
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 
@@ -37,7 +37,6 @@ export interface WorkspaceState {
   activeView?: ViewId;
   rightPanelTab?: string;
   rightPanelOpen?: boolean;
-  bottomPanelOpen?: boolean;
   [key: string]: unknown;
 }
 
@@ -85,7 +84,6 @@ export interface ChatMessage {
 export interface ChatContext {
   file?: string;
   selection?: { startLine: number; endLine: number; code: string };
-  memoryRefs?: string[];
   findingRefs?: string[];
 }
 
@@ -116,13 +114,6 @@ export interface ExploitRecord {
   createdAt: number;
 }
 
-export interface MemoryEntry {
-  key: string;
-  content: string;
-  metadata: Record<string, unknown>;
-  score?: number;
-}
-
 export interface ResearchTask {
   id: string;
   title: string;
@@ -140,13 +131,6 @@ export interface ProactiveSuggestion {
   description: string;
   context: { file?: string; line?: number; function?: string };
   actions: SuggestedAction[];
-}
-
-export interface LogEntry {
-  timestamp: number;
-  level: 'info' | 'warn' | 'error' | 'debug';
-  source: string;
-  message: string;
 }
 
 export interface TimelineEvent {
@@ -179,14 +163,18 @@ export interface AuditProgress {
   startedAt: number;
 }
 
+export type BackendStatusState = {
+  backend: 'connected' | 'unavailable';
+  llm: 'available' | 'unavailable';
+  forge: 'available' | 'unavailable';
+};
+
 export interface SireenState {
   connectionStatus: ConnectionStatus;
-  apiKeySet: boolean | null;
+  backendStatus: BackendStatusState | null;
   activeView: ViewId;
   rightPanelTab: 'chat' | 'reasoning';
-  bottomPanelTab: 'logs';
   rightPanelOpen: boolean;
-  bottomPanelOpen: boolean;
   protocol: ProtocolState | null;
   contracts: ContractFile[];
   findings: Finding[];
@@ -196,12 +184,8 @@ export interface SireenState {
   isThinking: boolean;
   thinkingSteps: ThinkingStep[];
   exploits: ExploitRecord[];
-  memoryEntries: MemoryEntry[];
-  memoryCollection: string;
   researchNotes: string;
   tasks: ResearchTask[];
-  sandboxReady: boolean;
-  simulationLog: LogEntry[];
   suggestions: ProactiveSuggestion[];
   activeSessionId: string | null;
   activeSessionName: string | null;

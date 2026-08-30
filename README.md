@@ -1,6 +1,6 @@
 # Sireen
 
-**Forge-backed adversarial security workbench.** SIREEN turns a Solidity attack hypothesis into an inspectable PoC, an independent Forge verification result, and a human-reviewable evidence report — inside VS Code.
+**Forge-backed adversarial security workbench.** SIREEN turns a Solidity attack hypothesis into an inspectable PoC, an independent Forge verification result, and a human-reviewable evidence report - from the CLI or inside VS Code.
 
 Sireen combines a VS Code extension and a FastAPI audit backend running an explicit stage pipeline: INPUT → DISCOVERY → REASONING → HYPOTHESIS → ATTACK PATH → PoC → VERIFICATION (Forge) → EVIDENCE → FINDING → REPORT.
 
@@ -15,7 +15,7 @@ Sireen combines a VS Code extension and a FastAPI audit backend running an expli
 | Generate Foundry PoCs for **reentrancy, access control, arithmetic** vectors | Produce PoCs for oracle/flash-loan/governance/etc. (marked `skipped_unsupported`) |
 | Execute PoCs with local `forge` and record compile/test status, executed-test counts, durations, raw output | Run Slither, Mythril, or Echidna inside the audit path |
 | Assign explicit terminal states (below) and persist audits + evidence packs durably in SQLite | Compute authoritative risk scores or severities (labels are heuristic estimates) |
-| Export Markdown/JSON reports that reference evidence IDs and reproduction steps | Provide hosted/cloud execution, teams, RBAC, billing in the local product |
+| Export Markdown/JSON reports that reference evidence IDs and reproduction steps | Provide hosted/cloud execution, teams, RBAC, billing, or autonomous agents |
 
 ## Evidence model & terminal states
 
@@ -28,6 +28,31 @@ Terminal states (never a generic "success"):
 - **UNVERIFIED** — coverage insufficient to classify the run as clean
 - **FAILED** — pipeline error, or every PoC failed generation/compilation
 - **CLEAN_WITH_COVERAGE** — no confirmed and no review-pending findings, and every hypothesis received a real executed Forge attempt
+
+## Install the CLI
+
+Requirements: Python 3.11+ and Foundry/Forge for independent verification.
+
+```bash
+cd gaolaif/backend
+python -m pip install -r requirements.txt
+python -m pip install -e .
+
+python -m sireen_cli audit ../../test_contracts/VulnerableVault.sol --report
+```
+
+Useful commands:
+
+```bash
+python -m sireen_cli audit ./Contract.sol
+python -m sireen_cli audit ./Contract.sol --json
+python -m sireen_cli audit ./Contract.sol --report report.md
+python -m sireen_cli audits
+python -m sireen_cli show <audit-id>
+python -m sireen_cli report <audit-id> --output report.md
+```
+
+CLI exit policy: `0` means `CONFIRMED` or `CLEAN_WITH_COVERAGE`; `2` means `DEGRADED` or `UNVERIFIED`; `1` means `FAILED` or input/runtime error; `3` means an audit ID was not found. `pip install -e .` also installs `sireen`; use it instead of `python -m sireen_cli` when Python's Scripts directory is on `PATH`.
 
 ## Features
 
@@ -43,10 +68,6 @@ Terminal states (never a generic "success"):
 
 - **Report Export** -- Markdown and JSON report formats for bug bounty submissions
 
-**Pro/Cloud preview (inactive in the local product):**
-
-- **Subscription layer** -- Supabase-backed tier limits with NOWPayments integration. No hosted service is operated for v0.1; this code ships dormant.
-
 ## Repository layout
 
 ```
@@ -60,13 +81,12 @@ goalaif/
 │   │   ├── subscription/       # Payments + Supabase quotas
 │   │   └── tests/              # E2E and unit tests
 │   ├── extension/              # VS Code extension (React webview)
-│   └── sandbox-images/         # EVM and Move Docker images
-├── goalaif/                    # Agent-core package (Ollama + Qdrant stack)
-│   ├── packages/agent-core/    # Multi-agent orchestration API
-│   └── docker-compose.yml      # Qdrant + agent-core services
-├── dynamic_gate_runner.py      # Local gate verification harness
-├── SEI_INFRASTRUCTURE_MAP.md   # Sei Network audit reference map
-└── gaolaif.html                # Standalone simulation cockpit UI
+│   ├── sandbox-images/         # Experimental EVM and Move Docker images
+│   ├── website/                # Static Core v0.1 product website
+│   └── SIREEN_*.md             # Scope and release-audit documents
+├── test_contracts/             # Local Solidity fixtures
+├── LICENSE
+└── README.md
 ```
 
 ## Prerequisites
@@ -76,12 +96,12 @@ goalaif/
 | Python | 3.11+ | Backend and tests |
 | Node.js | 18+ | VS Code extension build |
 | Foundry (`forge`) | latest | Phase 3 simulation (optional but recommended) |
-| Docker | latest | Sandbox containers, Qdrant |
+| Docker | latest | Experimental sandbox containers, optional |
 | OPENROUTER_API_KEY | — | LLM calls (OpenRouter) |
 
 ## Quick start
 
-### 1. Backend
+### 1. Backend and CLI
 
 ```bash
 cd gaolaif/backend
@@ -108,15 +128,6 @@ Press **F5** in VS Code to launch the Extension Development Host, or package wit
 
 Default backend port in extension settings: **7432** (`gaolaif.backendPort`).
 
-### 3. Agent core (optional)
-
-```bash
-cd goalaif
-docker compose up -d
-```
-
-Starts Qdrant on port 6333 and agent-core on port 8000.
-
 ## API overview
 
 | Endpoint | Method | Description |
@@ -136,9 +147,6 @@ Starts Qdrant on port 6333 and agent-core on port 8000.
 | `/report/generate` | POST | Generate markdown report |
 | `/report/export` | POST | Export report (markdown/json) |
 | `/patch/generate` | POST | Generate remediation patch |
-| `/subscription/status` | GET | Check subscription tier/quota |
-| `/subscription/upgrade` | POST | Create NOWPayments invoice |
-| `/payment/webhook` | POST | NOWPayments IPN webhook |
 | `/config/set-key` | POST | Set OpenRouter API key |
 | `/ws` | WebSocket | Real-time audit progress |
 
@@ -163,19 +171,20 @@ If the backend cannot be reached, SIREEN shows an actionable warning with a Retr
 ## Running tests
 
 ```bash
-# Backend unit + E2E tests (60+ tests)
+# Backend unit + E2E tests
 cd gaolaif/backend
 pytest tests/ firewall/tests/ -v
 
-# Runtime verification suite (15 component checks)
-python runtime_verification/verify_all.py
+# CLI tests
+pytest tests/test_sireen_cli.py -v
 
 # Extension tests (jest)
 cd gaolaif/extension
 npx jest
 
-# Extension build check
+# Extension build/package check
 cd gaolaif/extension && npm run compile
+npx vsce package
 ```
 
 Tests that require `OPENROUTER_API_KEY` or live LLM calls are skipped automatically when the key is not set.
@@ -205,6 +214,10 @@ Expected for `01_reentrancy.sol` with forge present: terminal_state `CONFIRMED`,
 | `SUPABASE_URL` | Supabase project URL (subscription) |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key |
 
+## Website
+
+The static site is [gaolaif/website/index.html](gaolaif/website/index.html). It has no frontend build dependency: open it locally or deploy that directory as static content. Its evidence panel is a clearly labeled demo fixture; real verdicts come only from local verifier execution.
+
 ## Architecture
 
 ```
@@ -224,7 +237,7 @@ Expected for `01_reentrancy.sol` with forge present: terminal_state `CONFIRMED`,
 
 ## License
 
-See `gaolaif/extension/LICENSE`.
+SIREEN is released under the [MIT License](LICENSE).
 
 ## Links
 

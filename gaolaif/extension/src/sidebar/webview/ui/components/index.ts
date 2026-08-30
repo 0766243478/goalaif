@@ -79,7 +79,6 @@ export { ChatInput } from './ChatInput';
 export { ThinkingIndicator } from './ThinkingIndicator';
 
 export { FindingCard } from './FindingCard';
-export { MemoryCard } from './MemoryCard';
 export { PoCPanel } from './PoCPanel';
 
 export { AuditProgressBar } from './AuditProgressBar';

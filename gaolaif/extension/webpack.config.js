@@ -1,4 +1,5 @@
 const path = require('path');
+const webpack = require('webpack');
 
 // Shared TS/TSX rule for both configs
 const tsRule = {
@@ -32,6 +33,11 @@ const extensionConfig = {
   externals: {
     vscode: 'commonjs vscode',
   },
+  // `ws` lists bufferutil/utf-8-validate as optional native accelerators;
+  // they are absent on this machine and webpack resolution noise otherwise.
+  plugins: [
+    new webpack.IgnorePlugin({ resourceRegExp: /^(bufferutil|utf-8-validate)$/ }),
+  ],
   resolve: {
     extensions: ['.ts', '.js', '.tsx'],
   },

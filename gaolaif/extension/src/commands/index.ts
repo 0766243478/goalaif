@@ -3,7 +3,6 @@ import { BackendClient } from '../api/backendClient';
 import { SidebarProvider } from '../sidebar/SidebarProvider';
 import { handleAuditSelection } from './auditSelection';
 import { handleExploitSelection } from './exploitSelection';
-import { handleRunSandbox } from './runSandbox';
 import { handleGenerateReport } from './generateReport';
 
 export function registerCommands(
@@ -23,9 +22,6 @@ export function registerCommands(
     ),
     vscode.commands.registerCommand('gaolaif.analyzeCurrentFile', () =>
       handleAnalyzeCurrentFile(backendClient, sidebarProvider)
-    ),
-    vscode.commands.registerCommand('gaolaif.runSandbox', () =>
-      handleRunSandbox(backendClient)
     ),
     vscode.commands.registerCommand('gaolaif.executePoC', () => {
       vscode.window.showInformationMessage('Execute PoC: select a generated PoC file first');

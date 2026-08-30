@@ -49,7 +49,7 @@ export function AuditProgressBar() {
     // Core v0.1: UNVERIFIED / DEGRADED outcome — neither success nor error.
     return (
       <Alert variant="warning" title="Unverified">
-        Audit finished without full verification — review terminal state & evidence in chat
+        Heuristic analysis finished without full verification. Configure a backend model to improve verification coverage, then review terminal state & evidence in chat.
       </Alert>
     );
   }

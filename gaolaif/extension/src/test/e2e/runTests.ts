@@ -23,7 +23,6 @@ export async function run() {
     'gaolaif.exploitSelection',
     'gaolaif.analyze',
     'gaolaif.analyzeCurrentFile',
-    'gaolaif.runSandbox',
     'gaolaif.executePoC',
     'gaolaif.switchMode'
   ];
@@ -36,7 +35,6 @@ export async function run() {
   const executableCommands = [
     'sireen.openChat',
     'sireen.generateReport',
-    'gaolaif.runSandbox',
     'gaolaif.switchMode'
   ];
   

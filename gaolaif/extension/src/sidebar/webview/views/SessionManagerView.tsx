@@ -9,6 +9,7 @@ import { Input } from '../ui/components/Input';
 import { Card } from '../ui/components/Card';
 import { Badge } from '../ui/components/Badge';
 import { EmptyState } from '../ui/components/EmptyState';
+import { Alert } from '../ui/components/Alert';
 import type { SessionMeta } from '../store/types';
 
 function formatDate(ts: number): string {
@@ -109,6 +110,10 @@ export default function SessionManagerView() {
   }, [send, search, showArchived]);
 
   const createSession = () => {
+    if (state.backendStatus?.backend !== 'connected') {
+      send('sireen.backend.configure', {});
+      return;
+    }
     send('sireen.session.create', {
       name: newName || 'Untitled Session',
       project: newProject,
@@ -116,6 +121,8 @@ export default function SessionManagerView() {
     setNewName('');
     setNewProject('');
   };
+
+  const backendAvailable = state.backendStatus?.backend === 'connected';
 
   const resumeLast = () => {
     if (state.sessionList.length > 0) {
@@ -139,6 +146,11 @@ export default function SessionManagerView() {
           <Text variant="caption" color="secondary" weight="semibold" style={{ letterSpacing: '0.05em' }}>
             NEW SESSION
           </Text>
+           {!backendAvailable && (
+             <Alert variant="warning" title="Local backend required">
+               Start the Sireen backend or configure <code>Sireen: Backend Path</code> before creating a session.
+             </Alert>
+           )}
           <Input
             value={newName}
             onChange={e => setNewName(e.target.value)}
@@ -151,7 +163,7 @@ export default function SessionManagerView() {
           />
           <Flex gap={2}>
             <Button variant="primary" onClick={createSession} iconLeft="plus">
-              Create Session
+              {backendAvailable ? 'Create Session' : 'Start Backend'}
             </Button>
             {state.sessionList.length > 0 && (
               <Button variant="secondary" onClick={resumeLast} iconLeft="history">

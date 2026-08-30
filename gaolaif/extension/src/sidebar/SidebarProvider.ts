@@ -3,7 +3,11 @@ import * as path from 'path';
 import { BackendClient } from '../api/backendClient';
 import { MessageRouter } from '../messaging/MessageRouter';
 import { SireenEvent, EventType } from '../sidebar/webview/types';
-import { SessionManager, type SessionState } from '../session';
+// Do not import from the session barrel here. The barrel also exports the
+// webview-only useSession hook, which imports acquireVsCodeApi() at module
+// evaluation time. SidebarProvider runs in the Node extension host.
+import { SessionManager } from '../session/SessionManager';
+import type { SessionState } from '../session/types';
 
 export class SidebarProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
@@ -198,28 +202,33 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     const scriptUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.extensionUri, 'dist', 'webview.js')
     );
-
-    // The dist folder URI — used as webpack publicPath for dynamic chunk loading
+    // Preserve the explicit public path used by existing lazy webview chunks.
     const distUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this.extensionUri, 'dist', '/')
     );
-
+    const nonce = getNonce();
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' ${webview.cspSource}; script-src ${webview.cspSource} 'unsafe-eval'; img-src ${webview.cspSource} data:;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' ${webview.cspSource}; script-src ${webview.cspSource} 'nonce-${nonce}'; img-src ${webview.cspSource} data:;">
   <title>Sireen</title>
 </head>
 <body>
   <div id="root"></div>
-  <script>
-    // Set webpack public path so dynamic imports (lazy chunks) resolve correctly
-    window.__webpack_public_path__ = '${distUri}';
-  </script>
-  <script src="${scriptUri}"></script>
+  <script nonce="${nonce}">window.__webpack_public_path__ = '${distUri}';</script>
+  <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
   }
+}
+
+function getNonce(): string {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let nonce = '';
+  for (let index = 0; index < 32; index += 1) {
+    nonce += alphabet.charAt(Math.floor(Math.random() * alphabet.length));
+  }
+  return nonce;
 }

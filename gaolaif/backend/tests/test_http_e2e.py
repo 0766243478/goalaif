@@ -40,6 +40,21 @@ class TestHealthEndpoints:
 
 
 class TestAuditValidation:
+    def test_set_key_removed_backend_owns_credential(self, client):
+        """Regression: the webview must never be able to push the OpenRouter
+        secret into the backend. /config/set-key is retired (410)."""
+        r = client.post("/config/set-key", json={"key": "sk-or-v1-regression-test-key"})
+        assert r.status_code == 410
+        assert "removed" in r.json()["error"].lower()
+
+    def test_config_status_exposes_booleans_only(self, client):
+        """Capability status must never include the secret value."""
+        r = client.get("/config/status")
+        assert r.status_code == 200
+        body = r.json()
+        assert set(body.keys()) == {"api_configured", "forge_available", "qdrant_available"}
+        assert all(isinstance(v, bool) for v in body.values())
+
     def test_audit_works_without_api_key_local_fallback(self, client):
         r = client.post("/audit/start", json={"code": "contract C { function f() public {} }"})
         # With local fallback (no OPENROUTER_API_KEY), audit starts and uses DEFAULT_SCENARIOS
@@ -91,3 +106,29 @@ class TestMemoryEndpoints:
         r = client.post("/memory/search", json={"query": "reentrancy", "top_k": 3})
         assert r.status_code == 200
         assert "results" in r.json()
+
+
+class TestSessionEndpoints:
+    def test_create_session_is_listed_and_can_be_deleted(self, client):
+        """Regression: the extension's New Session flow needs a durable ID.
+
+        The UI posts to /sessions/create, receives this record through the
+        extension host, and then refreshes /sessions/list.
+        """
+        created = client.post(
+            "/sessions/create",
+            json={"name": "HTTP session regression", "project": "sireen-tests"},
+        )
+        assert created.status_code == 200
+        session = created.json()
+        assert session["id"]
+        assert session["name"] == "HTTP session regression"
+        assert session["status"] == "active"
+
+        listed = client.get("/sessions/list?status=active")
+        assert listed.status_code == 200
+        assert any(item["id"] == session["id"] for item in listed.json()["sessions"])
+
+        deleted = client.delete(f"/sessions/{session['id']}")
+        assert deleted.status_code == 200
+        assert deleted.json()["status"] == "deleted"

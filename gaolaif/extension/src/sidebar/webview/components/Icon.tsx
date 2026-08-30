@@ -68,10 +68,8 @@ export type IconName =
   | 'chat'
   | 'attackWorkspace'
   | 'exploits'
-  | 'memory'
   | 'notes'
   | 'tasks'
-  | 'simulation'
   | 'settings'
   | 'brand'
   | 'connected'
@@ -131,10 +129,8 @@ const iconMap: Record<IconName, LucideIcon> = {
   chat: MessageSquare,
   attackWorkspace: Swords,
   exploits: Bomb,
-  memory: Brain,
   notes: StickyNote,
   tasks: ListChecks,
-  simulation: MonitorPlay,
   settings: Settings,
   brand: Shield,
   connected: Wifi,

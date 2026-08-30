@@ -38,19 +38,15 @@ function defaultSessionState(name: string, project: string): SessionState {
     chatMessages: [],
     findings: [],
     exploits: [],
-    memoryEntries: [],
     tasks: [],
     timeline: [],
     activeView: 'overview',
     rightPanelTab: 'chat',
     rightPanelOpen: true,
-    bottomPanelOpen: false,
     connectionStatus: 'disconnected',
-    apiKeySet: false,
     contractCode: '',
     contractFilePath: '',
     researchNotes: '',
-    memoryCollection: 'patterns',
   };
 }
 
@@ -85,19 +81,15 @@ export class SessionManager {
       chatMessages: [],
       findings: [],
       exploits: [],
-      memoryEntries: [],
       tasks: [],
       timeline: [],
       activeView: 'overview',
       rightPanelTab: 'chat',
       rightPanelOpen: true,
-      bottomPanelOpen: false,
       connectionStatus: 'disconnected',
-      apiKeySet: false,
       contractCode: '',
       contractFilePath: '',
       researchNotes: '',
-      memoryCollection: 'patterns',
     };
 
     sessionsMap.set(sessionId, sessionState);
@@ -286,16 +278,6 @@ export class SessionManager {
     }
   }
 
-  // Set API key status
-  setApiKeyStatus(sessionId: SessionId, configured: boolean): void {
-    const session = sessionsMap.get(sessionId);
-    if (session) {
-      session.apiKeySet = configured;
-      session.updated_at = Date.now();
-      this.onSessionChange?.(session);
-    }
-  }
-
   // Set contract code
   setContractCode(sessionId: SessionId, code: string, filePath: string): void {
     const session = sessionsMap.get(sessionId);
@@ -312,16 +294,6 @@ export class SessionManager {
     const session = sessionsMap.get(sessionId);
     if (session) {
       session.researchNotes = notes;
-      session.updated_at = Date.now();
-      this.onSessionChange?.(session);
-    }
-  }
-
-  // Set memory collection
-  setMemoryCollection(sessionId: SessionId, collection: string): void {
-    const session = sessionsMap.get(sessionId);
-    if (session) {
-      session.memoryCollection = collection;
       session.updated_at = Date.now();
       this.onSessionChange?.(session);
     }

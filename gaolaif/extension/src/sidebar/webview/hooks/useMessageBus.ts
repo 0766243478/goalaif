@@ -1,7 +1,7 @@
 import { useEffect, useCallback, useState, useRef } from 'react';
 import { vscode } from '../vscodeApi';
 import { useStore } from '../store';
-import type { ChatMessage, ThinkingStep, ExploitRecord, MemoryEntry, ProtocolState, PipelineStage, ViewId, TimelineEvent } from '../store/types';
+import type { ChatMessage, ThinkingStep, ExploitRecord, Finding, ProtocolState, PipelineStage, ViewId, TimelineEvent } from '../store/types';
 
 /**
  * Shared icon URI state. Lifted to a module-level singleton so that only the
@@ -88,6 +88,10 @@ export function useMessageBus() {
   const { dispatch } = useStore();
   const [iconUri, setIconUri] = useState<string>(iconUriStore.value);
   const dispatchRef = useRef(dispatch);
+  // Some backend transports can flush a generic error after they have already
+  // delivered the authoritative completion event. Keep that stale event from
+  // replacing a truthful zero-finding terminal result in the UI.
+  const protectedTerminalCompletionRef = useRef(false);
 
   // Keep the ref current without mutating it during render.
   useEffect(() => {
@@ -119,13 +123,22 @@ export function useMessageBus() {
           dispatch({ type: 'SET_CONNECTION', status: msg.payload.status });
           break;
 
-        case 'sireen.apiKey.status':
-          const configured = !!msg.payload?.configured;
-          console.log('[Sireen] apiKey.status received:', { configured, full: msg });
-          dispatch({ type: 'SET_API_KEY', set: configured });
+        case 'sireen.backend.status': {
+          const status = msg.payload?.status as {
+            backend: 'connected' | 'unavailable';
+            llm: 'available' | 'unavailable';
+            forge: 'available' | 'unavailable';
+          } | undefined;
+          console.log('[Sireen] backend.status received:', status);
+          if (status) {
+            dispatch({ type: 'SET_BACKEND_STATUS', status });
+          }
           break;
+        }
 
         case 'sireen.audit.started': {
+          // A new audit establishes a new terminal-event sequence.
+          protectedTerminalCompletionRef.current = false;
           const sessionId = (msg.payload?.session_id as string) || msg.payload?.sessionId;
           dispatch({ type: 'SET_SESSION', id: sessionId, name: msg.payload?.name });
           dispatch({ type: 'SET_AUDIT_PHASE', phase: 'phase1' });
@@ -220,12 +233,19 @@ export function useMessageBus() {
           dispatch({ type: 'SET_AUDIT_PROGRESS', progress: null });
           // Core v0.1: truthful terminal state drives the UI phase. Never show
           // generic success for degraded/unverified/failed outcomes.
-          const terminalState = String(
-            (msg.payload as Record<string, unknown>)?.terminal_state || ''
-          );
-          const evidenceCount = Array.isArray((msg.payload as Record<string, unknown>)?.evidence)
-            ? ((msg.payload as Record<string, unknown>)!.evidence as unknown[]).length
+          const completion = msg.payload as Record<string, unknown>;
+          const terminalState = String(completion?.terminal_state || 'unverified');
+          const findings = Array.isArray(completion?.findings)
+            ? completion.findings as Finding[]
+            : [];
+          const warnings = Array.isArray(completion?.warnings)
+            ? completion.warnings.filter((warning): warning is string => typeof warning === 'string')
+            : [];
+          const evidenceCount = Array.isArray(completion?.evidence)
+            ? completion.evidence.length
             : 0;
+          protectedTerminalCompletionRef.current = findings.length === 0
+            && (terminalState === 'unverified' || terminalState === 'clean_with_coverage');
           if (terminalState === 'failed') {
             dispatch({ type: 'SET_AUDIT_PHASE', phase: 'error' });
             dispatch({
@@ -239,13 +259,13 @@ export function useMessageBus() {
             });
             break;
           }
-          if (Array.isArray(msg.payload.findings) && msg.payload.findings.length > 0) {
+          if (findings.length > 0) {
             // Stamp every finding with the durable audit id so the Evidence
             // Pack viewer can fetch exactly this audit's verification record.
-            const auditId = String((msg.payload as Record<string, unknown>).audit_id || '');
-            const stampedFindings = msg.payload.findings.map((f: Record<string, unknown>) => ({
+            const auditId = String(completion.audit_id || '');
+            const stampedFindings: Finding[] = findings.map((f): Finding => ({
               ...f,
-              audit_id: (f.audit_id as string) || auditId,
+              audit_id: f.audit_id || auditId,
             }));
             dispatch({ type: 'ADD_FINDINGS', findings: stampedFindings });
             // The user just ran an audit — take them straight to the findings
@@ -276,9 +296,13 @@ export function useMessageBus() {
               },
             });
           } else {
-            // Zero-finding rule: Never fabricate success. If audit completes
-            // with no findings, show AUDIT_INCOMPLETE status.
-            dispatch({ type: 'SET_AUDIT_PHASE', phase: 'incomplete' });
+            // A completed run with zero findings is not automatically an error.
+            // Only Forge coverage may declare it clean; all other terminal
+            // outcomes remain explicitly unverified for human review.
+            dispatch({
+              type: 'SET_AUDIT_PHASE',
+              phase: terminalState === 'clean_with_coverage' ? 'complete' : 'incomplete',
+            });
             dispatch({
               type: 'ADD_CHAT_MESSAGE',
               message: {
@@ -288,7 +312,9 @@ export function useMessageBus() {
                   `Audit finished [${terminalState.toUpperCase() || 'UNVERIFIED'}] but no findings were produced.` +
                   (terminalState === 'clean_with_coverage'
                     ? ' Every hypothesis was executed by Forge and none reproduced — recorded as CLEAN WITH COVERAGE.'
-                    : ' The code may be secure, or analysis coverage was insufficient.'),
+                    : warnings.length > 0
+                      ? ` ${warnings.join(' ')} Configure a backend model to improve verification coverage.`
+                      : ' The code may be secure, or analysis coverage was insufficient. Configure a backend model to improve verification coverage.'),
                 timestamp: Date.now(),
               },
             });
@@ -298,7 +324,9 @@ export function useMessageBus() {
             message: {
               id: crypto.randomUUID(),
               role: 'assistant',
-              content: msg.payload.report || `Audit finished [${terminalState.toUpperCase()}]. Found ${msg.payload.findings?.length || 0} finding(s), ${evidenceCount} evidence pack(s).`,
+              content: typeof completion.report === 'string'
+                ? completion.report
+                : `Audit finished [${terminalState.toUpperCase()}]. Found ${findings.length} finding(s), ${evidenceCount} evidence pack(s).`,
               timestamp: Date.now(),
               suggestions: [
                 { id: 'view-findings', label: 'View Findings', command: 'sireen.navigate', args: { view: 'findings' } },
@@ -311,6 +339,9 @@ export function useMessageBus() {
         }
 
         case 'sireen.audit.incomplete':
+          if (protectedTerminalCompletionRef.current) {
+            break;
+          }
           dispatch({ type: 'SET_AUDIT_PHASE', phase: 'incomplete' });
           dispatch({
             type: 'ADD_CHAT_MESSAGE',
@@ -324,6 +355,9 @@ export function useMessageBus() {
           break;
 
         case 'sireen.audit.error':
+          if (protectedTerminalCompletionRef.current) {
+            break;
+          }
           dispatch({ type: 'SET_AUDIT_PHASE', phase: 'error' });
           dispatch({ type: 'SET_VIEW', view: 'findings' });
           dispatch({
@@ -348,6 +382,12 @@ export function useMessageBus() {
         // backend is unreachable) MUST be visible. Previously this command
         // had no case here and REST failures disappeared silently.
         case 'sireen.error':
+          // A REST failure can arrive after the backend has authoritatively
+          // completed an audit. It is then stale transport noise, not a
+          // reason to replace an UNVERIFIED/CLEAN terminal result with error.
+          if (protectedTerminalCompletionRef.current) {
+            break;
+          }
           dispatch({ type: 'SET_AUDIT_PHASE', phase: 'error' });
           dispatch({
             type: 'ADD_CHAT_MESSAGE',
@@ -482,10 +522,6 @@ export function useMessageBus() {
           break;
         }
 
-        case 'sireen.memory.results':
-          dispatch({ type: 'SET_MEMORY', entries: msg.payload.results as MemoryEntry[] });
-          break;
-
         case 'sireen.chat.context': {
           const ctx = msg.payload as Record<string, unknown>;
           const sel = ctx.selection as Record<string, unknown> | undefined;
@@ -519,15 +555,11 @@ export function useMessageBus() {
               content: `Protocol detected: ${msg.payload.name || 'Unknown'} (${msg.payload.totalContracts || 0} contracts, ${msg.payload.totalFunctions || 0} functions)`,
               timestamp: Date.now(),
               suggestions: [
-                { id: 'full-audit', label: 'Run Full Audit', command: 'sireen.audit.request' },
+                { id: 'selected-file-audit', label: 'Audit Selected Solidity File', command: 'sireen.audit.request' },
                 { id: 'show-findings', label: 'View Findings', command: 'sireen.navigate', args: { view: 'findings' } },
               ],
             },
           });
-          break;
-
-        case 'sireen.sandbox.started':
-          dispatch({ type: 'SET_SANDBOX', ready: true });
           break;
 
         case 'sireen.patch.result':
@@ -598,25 +630,17 @@ export function useMessageBus() {
           break;
         }
 
-        case 'sireen.session.deleted':
-          // Refresh the session list after deletion
-          vscode.postMessage({ command: 'sireen.session.list', payload: { status: 'active' } });
-          break;
-
         case 'sireen.session.update': {
           // Update session-specific state
           if (msg.payload?.audit_phase) {
+            if (protectedTerminalCompletionRef.current) {
+              break;
+            }
             dispatch({ type: 'SET_AUDIT_PHASE', phase: msg.payload.audit_phase as any });
           }
           if (msg.payload?.audit_progress) {
             dispatch({ type: 'SET_AUDIT_PROGRESS', progress: msg.payload.audit_progress });
           }
-          break;
-        }
-
-        case 'sireen.session.listed': {
-          const sessions = (msg.payload?.sessions || []) as Record<string, unknown>[];
-          dispatch({ type: 'SET_SESSION_LIST', sessions: sessions as any });
           break;
         }
 
