@@ -401,7 +401,7 @@ stateDiagram-v2
 
 ### 7.3 Extension Architecture
 
-**Activation:** `onStartupFinished` + `onLanguage:solidity/move` + `workspaceContains:foundry.toml/Move.toml`
+**Activation:** `onStartupFinished` + `onLanguage:solidity` + `workspaceContains:foundry.toml`
 
 **Components:**
 - `SidebarProvider` — generates HTML, registers message listener on every resolve
