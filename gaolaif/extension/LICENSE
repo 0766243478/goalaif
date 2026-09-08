@@ -1,21 +1,62 @@
-MIT License
+SIREEN — PROPRIETARY SOFTWARE LICENSE
+Copyright (c) 2026 Hussein Mohammed. All Rights Reserved.
 
-Copyright (c) 2026 Hussein Mohammed
+SIREEN is proprietary, closed-source software. This repository is publicly
+visible for transparency, evaluation, and security review. Public visibility
+does NOT make this software open source and does NOT grant any license to use,
+copy, modify, merge, publish, distribute, sublicense, or sell the Software or
+any derivative of it.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+PERMITTED WITHOUT SEPARATE WRITTEN AGREEMENT
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+  1. Viewing and reading the source code contained in this repository.
+  2. Installing and running official SIREEN builds (for example, the VS Code
+     extension distributed by the copyright holder) for the purpose of
+     evaluating SIREEN against code you own or are explicitly authorized to
+     test.
+  3. Quoting short excerpts for commentary, review, security research,
+     journalism, or academic citation, with attribution.
+
+NOT PERMITTED WITHOUT PRIOR WRITTEN PERMISSION
+
+  1. Copying, redistributing, republishing, or mirroring the Software or any
+     substantial portion of it.
+  2. Modifying the Software or creating derivative works.
+  3. Incorporating the Software, in whole or in part, into another product or
+     service, commercial or non-commercial.
+  4. Selling, licensing, sublicensing, renting, or leasing the Software.
+  5. Removing or altering this notice or any copyright, attribution, or
+     proprietary marking.
+  6. Reverse engineering, decompiling, or disassembling any distributed binary
+     or bundle, except to the extent this restriction is prohibited by
+     applicable law.
+
+THIRD-PARTY COMPONENTS
+
+This Software depends on third-party components that remain governed by their
+own licenses. Those licenses apply to those components only and do not extend
+any rights to SIREEN itself.
+
+GENERATED OUTPUT
+
+Proof-of-concept contracts, reports, and evidence artifacts that SIREEN
+generates from your input belong to you. Solidity test scaffolding SIREEN emits
+may carry its own SPDX identifier; that identifier applies to the generated
+test file, not to SIREEN.
+
+NO WARRANTY
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. SIREEN IS A SECURITY
+RESEARCH AID. IT DOES NOT GUARANTEE THE DISCOVERY OF VULNERABILITIES AND ITS
+OUTPUT IS NOT A SUBSTITUTE FOR PROFESSIONAL SECURITY REVIEW. IN NO EVENT SHALL
+THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY
+ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR ITS USE.
+
+AUTHORIZED USE ONLY
+
+SIREEN executes proof-of-concept exploit code. Use it only against smart
+contracts you own or have explicit written authorization to test.
+
+Licensing enquiries: https://github.com/0766243478/goalaif

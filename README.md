@@ -63,7 +63,7 @@ CLI exit policy: `0` means `CONFIRMED` or `CLEAN_WITH_COVERAGE`; `2` means `DEGR
 **Experimental components (shipped but NOT part of the Core v0.1 promise):**
 
 - **Smart memory** -- Qdrant-backed abstract pattern storage (zero-knowledge: no raw code stored). Not used to produce CONFIRMED evidence.
-- **Sandbox** -- Docker-based EVM/Move environments, invariant and fuzz endpoints. Requires Docker; not exercised by the core audit path.
+- **Sandbox** -- an experimental Docker-based EVM environment module. Requires Docker; NOT part of the core audit path and not exposed as an HTTP endpoint.
 - **Patch Engine** -- LLM-powered remediation patch generation for confirmed findings. AI output, never proof of correctness.
 
 - **Report Export** -- Markdown and JSON report formats for bug bounty submissions
@@ -81,7 +81,6 @@ goalaif/
 │   │   ├── subscription/       # Payments + Supabase quotas
 │   │   └── tests/              # E2E and unit tests
 │   ├── extension/              # VS Code extension (React webview)
-│   ├── sandbox-images/         # Experimental EVM and Move Docker images
 │   ├── website/                # Static Core v0.1 product website
 │   └── SIREEN_*.md             # Scope and release-audit documents
 ├── test_contracts/             # Local Solidity fixtures
@@ -139,9 +138,6 @@ Default backend port in extension settings: **7432** (`gaolaif.backendPort`).
 | `/audits/{id}` | GET | Full durable audit incl. hypotheses + evidence packs |
 | `/audits/{id}/report` | GET | Markdown/JSON evidence report |
 | `/exploit/start` | POST | Single exploit scenario |
-| `/sandbox/invariant` | POST | Run Forge invariant tests |
-| `/sandbox/fuzz` | POST | Run Forge fuzz tests |
-| `/sandbox/start` | POST | Start Docker sandbox |
 | `/memory/search` | POST | Query smart memory |
 | `/memory/save` | POST | Save abstract pattern to memory |
 | `/report/generate` | POST | Generate markdown report |
@@ -232,12 +228,19 @@ The static site is [gaolaif/website/index.html](gaolaif/website/index.html). It 
              (understand → judge)         (outbound + inbound)            (abstract patterns)
                     │
                     ▼
-             Foundry / Docker Sandbox
+             Foundry (forge)
 ```
 
 ## License
 
-SIREEN is released under the [MIT License](LICENSE).
+SIREEN is **proprietary, closed-source software**. Copyright (c) 2026 Hussein Mohammed.
+All rights reserved.
+
+This repository is **publicly visible** so the implementation can be reviewed and
+verified. Public visibility is **not** an open-source licence: no right to copy,
+modify, redistribute, or reuse the source is granted. See [LICENSE](LICENSE) for
+the exact terms, including what *is* permitted (reading the code, running official
+builds against code you own or are authorized to test).
 
 ## Links
 
