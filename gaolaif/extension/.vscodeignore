@@ -19,3 +19,7 @@ RELEASE_REPORT.md
 *.vsix
 **/*.map
 **/*.d.ts
+# build/test logs must never ship
+*.log.err
+*.log
+README.md.bak
