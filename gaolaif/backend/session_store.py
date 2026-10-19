@@ -13,6 +13,7 @@ Schema:
 """
 
 import json
+import os
 import random
 import sqlite3
 import time
@@ -20,7 +21,23 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-DB_PATH = Path(__file__).parent / "sessions.db"
+
+def _resolve_db_path() -> Path:
+    """Resolve the SQLite database path.
+
+    Honours the documented ``SIREEN_DB_PATH`` environment variable so a
+    researcher can keep audit history outside the installed package
+    directory — for example on a persistent volume, a per-project folder,
+    or a throwaway location used for evaluation. Falls back to the
+    package-local ``sessions.db`` when the variable is unset or empty.
+    """
+    configured = os.environ.get("SIREEN_DB_PATH", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return Path(__file__).parent / "sessions.db"
+
+
+DB_PATH = _resolve_db_path()
 
 
 def _get_db() -> sqlite3.Connection:
@@ -229,23 +246,39 @@ def create_session(
     language: str = "solidity",
     workspace_state: Optional[dict] = None,
 ) -> dict:
-    """Create a new session and return it as a dict."""
+    """Create a new session and return it as a dict.
+
+    Retried on transient ``database is locked`` errors: the extension creates
+    a session while a background audit pipeline may still be writing, and the
+    previous single-shot INSERT surfaced as an HTTP 500 to the user.
+    """
     sid = f"session-{uuid.uuid4().hex[:12]}"
     now = time.time()
     ws = workspace_state or {}
-    conn = _get_db()
-    conn.execute(
-        """INSERT INTO sessions
-           (id, name, project, repository, status, audit_status,
-            file_path, file_name, language, created_at, updated_at, workspace_state)
-           VALUES (?, ?, ?, ?, 'active', 'idle', ?, ?, ?, ?, ?, ?)""",
-        (sid, name or "Untitled Session", project, repository,
-         file_path, file_name, language, now, now, json.dumps(ws)),
+    display_name = name or "Untitled Session"
+    _retry_locked(
+        _create_session_impl, sid, display_name, project, repository,
+        file_path, file_name, language, now, json.dumps(ws),
     )
-    _add_timeline_event(conn, sid, "session_created", f"Session '{name or 'Untitled Session'}' created")
-    conn.commit()
-    conn.close()
     return get_session(sid)
+
+
+def _create_session_impl(sid, name, project, repository, file_path,
+                         file_name, language, now, ws_json) -> None:
+    conn = _get_db()
+    try:
+        conn.execute(
+            """INSERT INTO sessions
+               (id, name, project, repository, status, audit_status,
+                file_path, file_name, language, created_at, updated_at, workspace_state)
+               VALUES (?, ?, ?, ?, 'active', 'idle', ?, ?, ?, ?, ?, ?)""",
+            (sid, name, project, repository,
+             file_path, file_name, language, now, now, ws_json),
+        )
+        _add_timeline_event(conn, sid, "session_created", f"Session '{name}' created")
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def get_session(session_id: str) -> Optional[dict]:
@@ -347,16 +380,29 @@ def save_workspace_state(session_id: str, state: dict) -> bool:
 
 
 def delete_session(session_id: str) -> bool:
-    """Soft-delete a session (marks as 'deleted')."""
+    """Soft-delete a session (marks as 'deleted').
+
+    Retried on transient ``database is locked`` errors: the VS Code extension
+    deletes sessions while background audit writers may still hold the lock,
+    and the previous single-shot UPDATE surfaced as an HTTP 500 to the user.
+    """
+    return _retry_locked(_delete_session_impl, session_id)
+
+
+def _delete_session_impl(session_id: str) -> bool:
     conn = _get_db()
-    row = conn.execute("SELECT id FROM sessions WHERE id = ?", (session_id,)).fetchone()
-    if not row:
+    try:
+        row = conn.execute("SELECT id FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        if not row:
+            return False
+        conn.execute(
+            "UPDATE sessions SET status = 'deleted', updated_at = ? WHERE id = ?",
+            (time.time(), session_id),
+        )
+        conn.commit()
+        return True
+    finally:
         conn.close()
-        return False
-    conn.execute("UPDATE sessions SET status = 'deleted', updated_at = ? WHERE id = ?", (time.time(), session_id))
-    conn.commit()
-    conn.close()
-    return True
 
 
 def duplicate_session(session_id: str, new_name: str = "") -> Optional[dict]:
