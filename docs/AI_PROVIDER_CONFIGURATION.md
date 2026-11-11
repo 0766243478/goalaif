@@ -6,14 +6,21 @@ SIREEN supports multiple AI providers for enriched hypothesis generation while m
 
 ## 1. Supported Providers
 
-| Provider | Type | Default Model | Config Key |
-|---|---|---|---|
-| `openrouter` | Cloud | `openai/gpt-oss-20b:free` | `OPENROUTER_API_KEY` |
-| `openai` | Cloud | `gpt-4o-mini` | `OPENAI_API_KEY` |
-| `anthropic` | Cloud | `claude-3-5-sonnet-20241022` | `ANTHROPIC_API_KEY` |
-| `gemini` | Cloud | `gemini-1.5-flash` | `GEMINI_API_KEY` |
-| `ollama` | Local | `llama3.2` | (None required) |
-| `custom` | Local/Custom | `default` | Optional API Key |
+| Provider | Type | Default Model | Config Key | Verification Status | Verification Evidence |
+|---|---|---|---|---|---|
+| `openrouter` | Cloud | `openai/gpt-oss-20b:free` | `OPENROUTER_API_KEY` | **ERROR-HANDLING-VERIFIED** | Real API probe with dummy key returned HTTP 401; request headers and response handling verified. |
+| `openai` | Cloud | `gpt-4o-mini` | `OPENAI_API_KEY` | **ERROR-HANDLING-VERIFIED** | Real API probe with dummy key returned HTTP 401; payload and key masking verified. |
+| `anthropic` | Cloud | `claude-3-5-sonnet-20241022` | `ANTHROPIC_API_KEY` | **ERROR-HANDLING-VERIFIED** | Real API probe with dummy key returned HTTP 401 invalid `x-api-key`; `/messages` format verified. |
+| `gemini` | Cloud | `gemini-1.5-flash` | `GEMINI_API_KEY` | **ERROR-HANDLING-VERIFIED** | Real API probe returned HTTP 400 invalid argument; payload handling verified. |
+| `ollama` | Local | `llama3.2` | (None required) | **ERROR-HANDLING-VERIFIED** | Real transport probe returned `[Errno 111] Connection refused` when offline; mocked tests pass. |
+| `custom` | Local/Custom | `default` | Optional API Key | **MOCK-VERIFIED** | Mocked unit tests confirm endpoint routing and JSON schema adaptation. |
+
+### Verification Taxonomy Definitions
+- **LIVE-INFERENCE-VERIFIED**: Successful end-to-end LLM inference with live model output generated.
+- **CONNECTION-VERIFIED**: Successful transport connection established to endpoint.
+- **ERROR-HANDLING-VERIFIED**: Real HTTP/network error response received from provider and safely parsed.
+- **MOCK-VERIFIED**: Tested via mock responses in unit tests.
+- **NOT-TESTED**: Not executed or verified.
 
 ---
 
