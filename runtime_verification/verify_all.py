@@ -115,6 +115,15 @@ def main() -> int:
         results.append(("golden path (forge CONFIRMED)", "BLOCKED",
                         "missing dependency: python and forge"))
 
+    # Report AI reasoning mode honestly
+    has_or_key = os.environ.get("OPENROUTER_API_KEY", "").strip() != ""
+    has_oa_key = os.environ.get("OPENAI_API_KEY", "").strip() != ""
+    has_ant_key = os.environ.get("ANTHROPIC_API_KEY", "").strip() != ""
+    if has_or_key or has_oa_key or has_ant_key:
+        results.append(("ai reasoning mode", "PASS", "LLM-assisted mode active"))
+    else:
+        results.append(("ai reasoning mode", "PASS", "HEURISTIC mode active (no cloud API keys; local AST analysis)"))
+
     secrets_scan()
 
     print("\n=== SIREEN CORE v0.1 RELEASE GATE ===")

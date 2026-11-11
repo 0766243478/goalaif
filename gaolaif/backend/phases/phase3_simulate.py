@@ -118,8 +118,12 @@ async def _run_forge_test(
 
     start = time.perf_counter()
     
-    # Create persistent temp directory (not auto-cleaned on failure)
+    # Create persistent temp directory (not auto-cleaned on failure) with strict 0700 permissions
     tmpdir = tempfile.mkdtemp(prefix="sireen_poc_")
+    try:
+        os.chmod(tmpdir, 0o700)
+    except OSError:
+        pass
     tmp = Path(tmpdir)
     workspace_preserved = False
 
