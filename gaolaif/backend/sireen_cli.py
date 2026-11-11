@@ -9,6 +9,7 @@ from pathlib import Path
 
 import main as sireen_main
 import session_store
+from llm.router import Router, SUPPORTED_PROVIDERS, load_config, mask_key, save_config
 from models.types import AuditSession, TerminalState
 
 
@@ -183,6 +184,59 @@ def _command_report(args: argparse.Namespace) -> int:
     return _exit_code(audit)
 
 
+def _command_config(args: argparse.Namespace) -> int:
+    router = Router()
+    if args.config_action == "show":
+        cfg = load_config()
+        print("SIREEN AI Provider Configuration")
+        print("---------------------------------")
+        print(f"Active Provider:    {router.provider} ({SUPPORTED_PROVIDERS.get(router.provider, {}).get('name', 'Unknown')})")
+        print(f"Active Mode:        {router.get_mode_description()}")
+        print(f"Base URL:           {router.base_url}")
+        print(f"Model:              {router.model_override or SUPPORTED_PROVIDERS.get(router.provider, {}).get('default_model', 'default')}")
+        print(f"Configured API Key: {mask_key(router.api_key)}")
+        print(f"Ready:              {'YES' if router.is_configured() else 'NO (HEURISTIC mode active)'}")
+        return 0
+
+    if args.config_action == "llm":
+        provider = args.provider.lower() if args.provider else router.provider
+        if provider not in SUPPORTED_PROVIDERS:
+            print(f"Error: Unsupported provider '{provider}'.", file=sys.stderr)
+            print(f"Supported providers: {', '.join(SUPPORTED_PROVIDERS.keys())}", file=sys.stderr)
+            return 1
+
+        cfg = load_config()
+        cfg["provider"] = provider
+        if args.model:
+            cfg["model"] = args.model
+        if args.endpoint:
+            cfg["base_url"] = args.endpoint
+        if args.key:
+            cfg["api_key"] = args.key
+
+        save_config(cfg)
+        router.reload()
+
+        print(f"SIREEN LLM provider configured: {provider}")
+        print(f"Mode: {router.get_mode_description()}")
+        print(f"Base URL: {router.base_url}")
+        print(f"API Key: {mask_key(router.api_key)}")
+
+        if args.test:
+            print("Testing provider connection...")
+            res = router.call("scanner", "You are an assistant.", "Respond with: OK")
+            if res.success:
+                print(f"[OK] Connection test succeeded in {res.latency_ms:.0f}ms.")
+            else:
+                print(f"[FAILED] Connection test failed: {res.error}", file=sys.stderr)
+                return 1
+
+        return 0
+
+    print("Usage: sireen config {llm,show} [options]")
+    return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sireen", description="Forge-backed adversarial security workbench.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -207,6 +261,21 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("audit_id")
     report.add_argument("--output", "-o")
     report.set_defaults(handler=_command_report)
+
+    config = subparsers.add_parser("config", help="Manage AI provider configuration")
+    config_subs = config.add_subparsers(dest="config_action", required=True)
+
+    config_show = config_subs.add_parser("show", help="Display current AI configuration")
+    config_show.set_defaults(handler=_command_config)
+
+    config_llm = config_subs.add_parser("llm", help="Configure AI provider and credentials")
+    config_llm.add_argument("--provider", "-p", choices=list(SUPPORTED_PROVIDERS.keys()), help="Provider name")
+    config_llm.add_argument("--model", "-m", help="Model name or identifier")
+    config_llm.add_argument("--key", "-k", help="API key")
+    config_llm.add_argument("--endpoint", "-e", help="Custom API endpoint base URL")
+    config_llm.add_argument("--test", action="store_true", help="Test connectivity immediately")
+    config_llm.set_defaults(handler=_command_config)
+
     return parser
 
 
