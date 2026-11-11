@@ -9,7 +9,8 @@ AI-native smart contract security workspace for Web3 auditors. VS Code extension
 ```
 goalaif/
 ├── docker-compose.prod.yml           # Production: backend (port 7432) + Qdrant
-├── dynamic_gate_runner.py            # 11-task local verification harness
+├── runtime_verification/
+│   └── verify_all.py                 # Core release gate runner
 ├── README.md
 ├── SEI_INFRASTRUCTURE_MAP.md         # Sei Network audit reference
 ├── gaolaif/
@@ -76,7 +77,7 @@ npx jest                     # unit tests
 ### Full Verification
 
 ```bash
-python dynamic_gate_runner.py    # 11-task local verifier (THE GATE)
+python runtime_verification/verify_all.py    # Core release gate (THE GATE)
 ```
 
 ### Production
@@ -204,7 +205,7 @@ Extension connects to backend on `http://localhost:7432`. Backend health check r
 
 - **Backend**: `pytest tests/ firewall/tests/ -v` — covers all phases, router, env simulator, forge std mock, HTTP E2E, subscription, anonymizer.
 - **Extension**: `npx jest` — BackendClient and component tests.
-- **Gate runner**: `python dynamic_gate_runner.py` — 11 tasks verifying anonymizer round-trip, cloud toggle, consensus blocking, etc.
+- **Gate runner**: `python runtime_verification/verify_all.py` — Release gate verifying backend pytest, extension jest, typescript webpack build, golden path forge confirmation, and secrets scan.
 - Tests needing `OPENROUTER_API_KEY` or `forge` auto-skip when unavailable.
 
 ---
