@@ -151,7 +151,7 @@ async def _run_forge_test(
         while retry_count <= MAX_COMPILE_RETRIES and not compile_success:
             compile_result = await asyncio.to_thread(
                 lambda: subprocess.run(
-                    [str(forge_exe), "build", "--root", str(tmp)],
+                    _forge_cmd(str(forge_exe), "build", "--root", str(tmp)),
                     capture_output=True, text=False, timeout=60,
                     env={**os.environ, "FOUNDRY_SRC": str(tmp)},
                 )
@@ -208,8 +208,10 @@ async def _run_forge_test(
         try:
             test_result = await asyncio.to_thread(
                 lambda: subprocess.run(
-                    [str(forge_exe), "test", "--root", str(tmp),
-                     "--match-path", "*PoC*", "--no-match-path", "*.s.sol"],
+                    _forge_cmd(
+                        str(forge_exe), "test", "--root", str(tmp),
+                        "--match-path", "*PoC*", "--no-match-path", "*.s.sol",
+                    ),
                     capture_output=True, text=False, timeout=120,
                     env={**os.environ, "FOUNDRY_SRC": str(tmp)},
                 )
@@ -458,6 +460,19 @@ def _find_forge() -> Optional[Path]:
     if found:
         return Path(found)
     return None
+
+
+# When a `solc` binary is available on PATH, tell Forge to use it directly
+# (--use solc) instead of downloading the compiler from binaries.soliditylang.org.
+# The Rust TLS client used by Forge's downloader cannot verify the sandbox's
+# intercepting CA, so the download path fails even when a local solc exists.
+# Auto-detect keeps the default download behavior intact for normal environments.
+_USE_SOLC = shutil.which("solc") is not None
+
+
+def _forge_cmd(*args: str) -> list[str]:
+    """Build a forge invocation, appending --use solc when a local solc exists."""
+    return list(args) + (["--use", "solc"] if _USE_SOLC else [])
 
 
 def _ensure_forge_std(tmp: Path):
