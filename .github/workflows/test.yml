@@ -144,6 +144,9 @@ jobs:
           cache: npm
           cache-dependency-path: gaolaif/extension/package-lock.json
 
+      - name: Create dependency audit result directory
+        run: python -c "from pathlib import Path; Path('test-results').mkdir(exist_ok=True)"
+
       - name: Install pip-audit
         run: python -m pip install pip-audit
 
