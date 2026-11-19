@@ -20,6 +20,7 @@ runs and CI; it is never the default.
 
 import os
 import secrets
+import subprocess
 from pathlib import Path
 
 ENV_TOKEN = "SIREEN_API_TOKEN"
@@ -49,13 +50,95 @@ def _read_token_file(path: Path) -> str:
         return ""
 
 
+def _windows_current_user_sid() -> str:
+    import ctypes
+    from ctypes import wintypes
+
+    class _SidAndAttributes(ctypes.Structure):
+        _fields_ = [("sid", ctypes.c_void_p), ("attributes", wintypes.DWORD)]
+
+    class _TokenUser(ctypes.Structure):
+        _fields_ = [("user", _SidAndAttributes)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcessToken.restype = wintypes.BOOL
+    kernel32.OpenProcessToken.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)
+    ]
+    kernel32.GetTokenInformation.restype = wintypes.BOOL
+    kernel32.GetTokenInformation.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
+    advapi32.ConvertSidToStringSidW.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)
+    ]
+
+    token = wintypes.HANDLE()
+    if not kernel32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(token)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        size = wintypes.DWORD()
+        kernel32.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))
+        if not size.value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        buffer = ctypes.create_string_buffer(size.value)
+        if not kernel32.GetTokenInformation(
+            token, 1, buffer, size.value, ctypes.byref(size)
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+        sid_text = wintypes.LPWSTR()
+        sid = ctypes.cast(buffer, ctypes.POINTER(_TokenUser)).contents.user.sid
+        if not advapi32.ConvertSidToStringSidW(sid, ctypes.byref(sid_text)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            return sid_text.value
+        finally:
+            kernel32.LocalFree(ctypes.cast(sid_text, ctypes.c_void_p))
+    finally:
+        kernel32.CloseHandle(token)
+
+
+def _secure_windows_token_file(path: Path) -> None:
+    sid = _windows_current_user_sid()
+    for args in (
+        ("/reset",),
+        ("/inheritance:r", "/grant:r", f"*{sid}:F"),
+    ):
+        result = subprocess.run(
+            ["icacls", str(path), *args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode:
+            detail = (result.stderr or result.stdout).strip()
+            raise OSError(
+                result.returncode,
+                f"icacls failed to secure token file: {detail}",
+                str(path),
+            )
+
+
 def _write_token_file(path: Path, token: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    if os.name == "nt":
+        os.close(fd)
+        _secure_windows_token_file(path)
+        fd = os.open(str(path), os.O_WRONLY | os.O_TRUNC)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(token + "\n")
-    # mkdir/umask can widen the mode; enforce owner-only explicitly.
-    os.chmod(str(path), 0o600)
+    if os.name != "nt":
+        # mkdir/umask can widen the mode; enforce owner-only explicitly.
+        os.chmod(str(path), 0o600)
 
 
 def resolve_token(create: bool = True) -> str:
