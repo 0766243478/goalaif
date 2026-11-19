@@ -12,9 +12,33 @@ Fixes:
 
 import hashlib
 import json
+import os
 import uuid
+from enum import Enum
 from typing import Optional
 from dataclasses import dataclass, field
+
+
+class MemoryMode(str, Enum):
+    """Where pattern memory lives.
+
+    AUTO    — use Qdrant when reachable, otherwise the process-local dict.
+    QDRANT  — require Qdrant; fail loudly at init instead of silently degrading.
+    MEMORY  — process-local dict only; never attempt a network connection.
+    OFF     — store and return nothing; the pipeline runs without recall.
+    """
+    AUTO = "auto"
+    QDRANT = "qdrant"
+    MEMORY = "memory"
+    OFF = "off"
+
+
+def resolve_mode() -> MemoryMode:
+    raw = os.environ.get("SIREEN_MEMORY_MODE", "").strip().lower()
+    try:
+        return MemoryMode(raw) if raw else MemoryMode.AUTO
+    except ValueError:
+        return MemoryMode.AUTO
 
 
 @dataclass
@@ -31,6 +55,8 @@ class SmartMemory:
         self._collection_name = "sireen_memory"
         self._fallback_store: dict[str, MemoryEntry] = {}
         self._use_qdrant = False
+        self._mode = resolve_mode()
+        self._init_error = ""
         self._embedder = None
         self._embed_dim = 384
         # NOTE: init() is NOT called here — it is called from the FastAPI
@@ -39,7 +65,15 @@ class SmartMemory:
 
     def init(self):
         """P-3 fix: called in background, not in __init__."""
-        import os
+        self._mode = resolve_mode()
+        if self._mode is MemoryMode.OFF:
+            self._use_qdrant = False
+            return
+        if self._mode is MemoryMode.MEMORY:
+            self._use_qdrant = False
+            self._init_embedder()
+            return
+
         self._init_embedder()
         try:
             from qdrant_client import QdrantClient
@@ -53,8 +87,27 @@ class SmartMemory:
             self._qdrant_client.get_collections()
             self._ensure_collection()
             self._use_qdrant = True
-        except Exception:
+            self._init_error = ""
+        except Exception as exc:
             self._use_qdrant = False
+            self._init_error = str(exc)
+            if self._mode is MemoryMode.QDRANT:
+                # Explicitly requested Qdrant must not degrade silently — the
+                # operator asked for durable recall and is not getting it.
+                raise
+
+    @property
+    def mode(self) -> str:
+        return self._mode.value
+
+    def describe(self) -> dict:
+        """Truthful capability report for /config/status and diagnostics."""
+        return {
+            "mode": self._mode.value,
+            "backend": "qdrant" if self._use_qdrant else "memory",
+            "degraded": bool(self._mode is MemoryMode.QDRANT and not self._use_qdrant),
+            "init_error": self._init_error,
+        }
 
     def _init_embedder(self):
         """V-1 fix: try sentence-transformers, fall back to hash-based."""
@@ -86,6 +139,8 @@ class SmartMemory:
         return (pseudo_vec * 192)[:self._embed_dim]
 
     def save(self, key: str, content: str, metadata: Optional[dict] = None):
+        if self._mode is MemoryMode.OFF:
+            return
         if not key or not content:
             return
         entry = MemoryEntry(
@@ -121,6 +176,8 @@ class SmartMemory:
             self._fallback_store[entry.key] = entry
 
     def search(self, query: str, top_k: int = 5) -> list[MemoryEntry]:
+        if self._mode is MemoryMode.OFF:
+            return []
         if self._use_qdrant:
             return self._search_qdrant(query, top_k)
         return self._search_fallback(query, top_k)
@@ -128,11 +185,21 @@ class SmartMemory:
     def _search_qdrant(self, query: str, top_k: int) -> list[MemoryEntry]:
         try:
             qvec = self._compute_vector(query)
-            results = self._qdrant_client.search(
-                collection_name=self._collection_name,
-                query_vector=qvec,
-                limit=top_k,
-            )
+            # qdrant-client 1.16 removed QdrantClient.search(); query_points is
+            # the supported replacement and returns a QueryResponse with
+            # `.points`. Older clients keep the legacy call.
+            if hasattr(self._qdrant_client, "query_points"):
+                results = self._qdrant_client.query_points(
+                    collection_name=self._collection_name,
+                    query=qvec,
+                    limit=top_k,
+                ).points
+            else:
+                results = self._qdrant_client.search(
+                    collection_name=self._collection_name,
+                    query_vector=qvec,
+                    limit=top_k,
+                )
             entries = []
             for r in results:
                 p = r.payload

@@ -16,9 +16,18 @@ describe('BackendClient', () => {
   let client: BackendClient;
   let configStore: Record<string, unknown>;
 
+  const savedEnv: Record<string, string | undefined> = {};
+
   beforeEach(() => {
     jest.useFakeTimers();
     configStore = {};
+    // Token resolution falls back to SIREEN_API_TOKEN and ~/.sireen/api-token.
+    // Point both somewhere inert so tests never depend on whether the backend
+    // has run on this machine.
+    savedEnv.SIREEN_API_TOKEN = process.env.SIREEN_API_TOKEN;
+    savedEnv.SIREEN_TOKEN_FILE = process.env.SIREEN_TOKEN_FILE;
+    delete process.env.SIREEN_API_TOKEN;
+    process.env.SIREEN_TOKEN_FILE = '/nonexistent-test/token';
     const vscode = require('vscode');
     (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
       get: (key: string, def?: unknown) => (key in configStore ? configStore[key] : def),
@@ -34,6 +43,10 @@ describe('BackendClient', () => {
   afterEach(() => {
     jest.useRealTimers();
     jest.restoreAllMocks();
+    for (const key of ['SIREEN_API_TOKEN', 'SIREEN_TOKEN_FILE']) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
     // @ts-ignore - global fetch assignment for tests
     delete global.fetch;
     client.stopBackend();
@@ -87,6 +100,37 @@ describe('BackendClient', () => {
       expect(warning).toContain('backend is not running');
       expect(warning).toContain('gaolaif.backendPath');
       expect(warning).not.toContain('fetch failed');
+    });
+
+    test('sends the bearer token on HTTP calls when one is configured', async () => {
+      configStore['apiToken'] = 'secret-token-xyz';
+      const fetchMock = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ ok: true }),
+        text: async () => '',
+      });
+      // @ts-ignore
+      global.fetch = fetchMock;
+
+      await client.get('/audits');
+
+      const init = fetchMock.mock.calls[0][1];
+      expect(init.headers.Authorization).toBe('Bearer secret-token-xyz');
+    });
+
+    test('omits the Authorization header when no token is available', async () => {
+      configStore['apiToken'] = '';
+      const fetchMock = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ ok: true }),
+        text: async () => '',
+      });
+      // @ts-ignore
+      global.fetch = fetchMock;
+
+      await client.get('/audits');
+
+      expect(fetchMock.mock.calls[0][1].headers.Authorization).toBeUndefined();
     });
 
     test('does not attempt spawn when backendPath points nowhere (fails fast)', async () => {

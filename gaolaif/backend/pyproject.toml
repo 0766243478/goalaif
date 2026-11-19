@@ -11,7 +11,7 @@ dependencies = [
 	"fastapi>=0.109.0",
 	"httpx>=0.26.0",
 	"pydantic>=2.5.0",
-	"python-dotenv==1.0.1",
+	"python-dotenv>=1.2.2,<2.0.0",
 	"qdrant-client>=1.9.0",
 	"supabase>=2.0.0",
 	"uvicorn[standard]>=0.27.0",
@@ -22,7 +22,7 @@ dependencies = [
 sireen = "sireen_cli:main"
 
 [tool.setuptools]
-py-modules = ["main", "session_store", "sireen_cli"]
+py-modules = ["api_auth", "main", "session_store", "sireen_cli"]
 
 [tool.setuptools.packages.find]
 include = ["firewall*", "llm*", "memory*", "models*", "phases*", "sandbox*", "subscription*", "verification*"]

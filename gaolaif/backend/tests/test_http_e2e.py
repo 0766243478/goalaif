@@ -5,6 +5,7 @@ Uses TestClient — no live server or API key required.
 Run: pytest backend/tests/test_http_e2e.py -v
 """
 
+import json
 import os
 import sys
 
@@ -47,13 +48,22 @@ class TestAuditValidation:
         assert r.status_code == 410
         assert "removed" in r.json()["error"].lower()
 
-    def test_config_status_exposes_booleans_only(self, client):
-        """Capability status must never include the secret value."""
+    def test_config_status_exposes_capabilities_never_secrets(self, client):
+        """Capability status must never include a secret value."""
         r = client.get("/config/status")
         assert r.status_code == 200
         body = r.json()
-        assert set(body.keys()) == {"api_configured", "forge_available", "qdrant_available"}
-        assert all(isinstance(v, bool) for v in body.values())
+        assert set(body.keys()) == {
+            "api_configured", "forge_available", "qdrant_available",
+            "memory_mode", "auth_required",
+        }
+        for key in ("api_configured", "forge_available", "qdrant_available", "auth_required"):
+            assert isinstance(body[key], bool), f"{key} must be a boolean"
+        assert body["memory_mode"] in {"auto", "qdrant", "memory", "off"}
+        # No key or value may carry credential material.
+        blob = json.dumps(body).lower()
+        for needle in ("sk-or-", "api_key", "token", "secret"):
+            assert needle not in blob
 
     def test_audit_works_without_api_key_local_fallback(self, client):
         r = client.post("/audit/start", json={"code": "contract C { function f() public {} }"})
