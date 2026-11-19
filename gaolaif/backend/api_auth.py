@@ -111,6 +111,7 @@ def _secure_windows_token_file(path: Path) -> None:
     for args in (
         ("/reset",),
         ("/inheritance:r", "/grant:r", f"*{sid}:F"),
+        ("/setowner", f"*{sid}"),
     ):
         result = subprocess.run(
             ["icacls", str(path), *args],

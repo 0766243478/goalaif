@@ -147,7 +147,11 @@ class TestTokenResolution:
         if os.name == "nt":
             sddl = _windows_file_security_sddl(token_file)
             owner_sid, dacl = sddl[2:].split("D:", 1)
-            assert dacl == f"P(A;;FA;;;{owner_sid})", f"token file ACL was {sddl}"
+            expected_dacls = {
+                f"P(A;;FA;;;{owner_sid})",
+                f"PAI(A;;FA;;;{owner_sid})",
+            }
+            assert dacl in expected_dacls, f"token file ACL was {sddl}"
         else:
             mode = stat.S_IMODE(token_file.stat().st_mode)
             assert mode == 0o600, f"token file mode was {oct(mode)}"
