@@ -63,12 +63,12 @@ def _windows_current_user_sid() -> str:
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
     kernel32.GetCurrentProcess.restype = wintypes.HANDLE
-    kernel32.OpenProcessToken.restype = wintypes.BOOL
-    kernel32.OpenProcessToken.argtypes = [
+    advapi32.OpenProcessToken.restype = wintypes.BOOL
+    advapi32.OpenProcessToken.argtypes = [
         wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)
     ]
-    kernel32.GetTokenInformation.restype = wintypes.BOOL
-    kernel32.GetTokenInformation.argtypes = [
+    advapi32.GetTokenInformation.restype = wintypes.BOOL
+    advapi32.GetTokenInformation.argtypes = [
         wintypes.HANDLE, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD,
         ctypes.POINTER(wintypes.DWORD),
     ]
@@ -81,15 +81,15 @@ def _windows_current_user_sid() -> str:
     ]
 
     token = wintypes.HANDLE()
-    if not kernel32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(token)):
+    if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(token)):
         raise ctypes.WinError(ctypes.get_last_error())
     try:
         size = wintypes.DWORD()
-        kernel32.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))
+        advapi32.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))
         if not size.value:
             raise ctypes.WinError(ctypes.get_last_error())
         buffer = ctypes.create_string_buffer(size.value)
-        if not kernel32.GetTokenInformation(
+        if not advapi32.GetTokenInformation(
             token, 1, buffer, size.value, ctypes.byref(size)
         ):
             raise ctypes.WinError(ctypes.get_last_error())
