@@ -147,6 +147,7 @@ class TestTokenResolution:
         if os.name == "nt":
             sddl = _windows_file_security_sddl(token_file)
             owner_sid, dacl = sddl[2:].split("D:", 1)
+            assert owner_sid == api_auth._windows_current_user_sid()
             expected_dacls = {
                 f"P(A;;FA;;;{owner_sid})",
                 f"PAI(A;;FA;;;{owner_sid})",
