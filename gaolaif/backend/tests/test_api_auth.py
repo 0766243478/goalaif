@@ -20,7 +20,7 @@ import main as sireen_main
 TOKEN = "test-token-abc123"
 
 
-def _windows_file_security_sddl(path):
+def _windows_file_security(path):
     import ctypes
     from ctypes import wintypes
 
@@ -32,6 +32,10 @@ def _windows_file_security_sddl(path):
         ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p),
         ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p),
         ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
+    advapi32.ConvertSidToStringSidW.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)
     ]
     advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW.restype = wintypes.BOOL
     advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = [
@@ -51,6 +55,14 @@ def _windows_file_security_sddl(path):
     if status:
         raise ctypes.WinError(status)
     try:
+        owner_text = wintypes.LPWSTR()
+        if not advapi32.ConvertSidToStringSidW(owner, ctypes.byref(owner_text)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            owner_sid = owner_text.value
+        finally:
+            kernel32.LocalFree(ctypes.cast(owner_text, ctypes.c_void_p))
+
         sddl = wintypes.LPWSTR()
         length = wintypes.DWORD()
         if not advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW(
@@ -59,7 +71,7 @@ def _windows_file_security_sddl(path):
         ):
             raise ctypes.WinError(ctypes.get_last_error())
         try:
-            return sddl.value
+            return sddl.value, owner_sid
         finally:
             kernel32.LocalFree(ctypes.cast(sddl, ctypes.c_void_p))
     finally:
@@ -145,12 +157,12 @@ class TestTokenResolution:
         assert token
         assert token_file.read_text(encoding="utf-8").strip() == token
         if os.name == "nt":
-            sddl = _windows_file_security_sddl(token_file)
-            owner_sid, dacl = sddl[2:].split("D:", 1)
+            sddl, owner_sid = _windows_file_security(token_file)
+            sddl_owner, dacl = sddl[2:].split("D:", 1)
             assert owner_sid == api_auth._windows_current_user_sid()
             expected_dacls = {
-                f"P(A;;FA;;;{owner_sid})",
-                f"PAI(A;;FA;;;{owner_sid})",
+                f"P(A;;FA;;;{sddl_owner})",
+                f"PAI(A;;FA;;;{sddl_owner})",
             }
             assert dacl in expected_dacls, f"token file ACL was {sddl}"
         else:
