@@ -74,9 +74,23 @@ def secrets_scan() -> None:
     )
 
 
+def _resolve_python() -> str | None:
+    """Prefer the interpreter running this script.
+
+    `shutil.which("python")` returns whatever is first on PATH, which is often
+    a bare system interpreter without the backend's dependencies. The gate then
+    reports a bogus FAIL for a suite that is actually green. The interpreter
+    that launched the gate is the one whose environment we mean to test.
+    """
+    for candidate in (sys.executable, shutil.which("python"), shutil.which("python3")):
+        if candidate and Path(candidate).exists():
+            return candidate
+    return None
+
+
 def main() -> int:
-    has_python = shutil.which("python") is not None or shutil.which("python3") is not None
-    python = shutil.which("python") or shutil.which("python3")
+    python = _resolve_python()
+    has_python = python is not None
     has_node = shutil.which("node") is not None
     has_forge = shutil.which("forge") is not None
 
@@ -138,7 +152,10 @@ def main() -> int:
     if blocked == len(results):
         print("VERDICT: BLOCKED — environment cannot verify the product. Do NOT release.")
         return 2
-    print("VERDICT: PASS (with BLOCKED items listed above — resolve before claiming runtime validation)")
+    if blocked:
+        print(f"VERDICT: PASS with {blocked} BLOCKED item(s) — resolve before claiming runtime validation.")
+        return 0
+    print("VERDICT: PASS — every gate ran and passed.")
     return 0
 
 

@@ -109,14 +109,14 @@ _dblog = _logging.getLogger("sireen.db")
 def _db_write(name: str, fn):
     """Instrumented write wrapper: logs thread, wait time, and lock errors."""
     t0 = _time.perf_counter()
-    _dblog.warning("DB-WRITE enter %s thread=%s", name, _threading.current_thread().name)
+    _dblog.debug("DB-WRITE enter %s thread=%s", name, _threading.current_thread().name)
     try:
         return fn()
     except sqlite3.OperationalError as e:
         _dblog.error("DB-LOCK %s after %.2fs: %s", name, _time.perf_counter() - t0, e)
         raise
     finally:
-        _dblog.warning("DB-WRITE exit %s after %.2fs", name, _time.perf_counter() - t0)
+        _dblog.debug("DB-WRITE exit %s after %.2fs", name, _time.perf_counter() - t0)
 
 
 
@@ -468,7 +468,6 @@ def _save_audit_impl(audit: dict) -> None:
     started_at, finished_at. hypotheses/evidence are saved separately.
     """
     conn = _get_db()
-    _dblog.warning("DB save_audit enter thread=%s", _threading.current_thread().name)
     conn.execute(
         """INSERT OR REPLACE INTO audits
            (id, file_name, file_path, language, source_hash, terminal_state,
@@ -495,7 +494,6 @@ def _save_audit_impl(audit: dict) -> None:
         ),
     )
     conn.commit()
-    _dblog.warning("DB save_audit exit ok")
     conn.close()
 
 

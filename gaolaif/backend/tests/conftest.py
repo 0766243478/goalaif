@@ -54,3 +54,16 @@ def no_real_pipeline(monkeypatch):
         return None
 
     monkeypatch.setattr(sireen_main, "_run_pipeline", _stub)
+
+
+@pytest.fixture(autouse=True)
+def disable_api_auth(monkeypatch):
+    """Turn off the bearer-token gate for suites that test other behaviour.
+
+    The gate is covered directly by ``test_api_auth.py``, which re-enables it.
+    Keeping it off here means these suites keep asserting what they were
+    written to assert instead of 401 responses.
+    """
+    monkeypatch.setenv("SIREEN_AUTH_DISABLED", "1")
+    monkeypatch.delenv("SIREEN_API_TOKEN", raising=False)
+    monkeypatch.delenv("SIREEN_TOKEN_FILE", raising=False)

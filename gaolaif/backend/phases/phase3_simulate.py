@@ -102,8 +102,10 @@ async def _run_forge_test(
         # SECURITY-FIX: verification infrastructure missing. Never let this
         # silently drop the heuristic finding downstream - mark it unverifiable
         # so phase4 surfaces it as needs_review instead of "0 findings".
+        # HONESTY: the status is VERIFIER_UNAVAILABLE, not COMPILATION_FAILED -
+        # no compiler ran, so claiming a compile failure would be a false record.
         proof.exploit_result = ExploitResult(
-            verification_status=VerificationStatus.COMPILATION_FAILED,
+            verification_status=VerificationStatus.VERIFIER_UNAVAILABLE,
             hypothesis=scenario.description,
             attack_vector=scenario.attack_vector,
             target_function=scenario.entry_point,

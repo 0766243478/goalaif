@@ -85,6 +85,50 @@ jobs:
         env:
           SIREEN_QA_MARKER: cross-platform-safe
 
+      - name: CLI exit-code and honesty smoke test
+        run: |
+          python -m sireen_cli audits
+          python -c "import subprocess,sys; r=subprocess.run([sys.executable,'-m','sireen_cli','show','audit-does-not-exist']); sys.exit(0 if r.returncode==3 else 1)"
+        working-directory: gaolaif/backend
+        env:
+          SIREEN_MEMORY_MODE: memory
+          SIREEN_AUTH_DISABLED: "1"
+
+      - name: API authentication smoke test
+        # The token is supplied through SIREEN_API_TOKEN because the lifespan
+        # hook resolves it at startup; setting the module attribute directly
+        # would be overwritten when TestClient enters the lifespan.
+        run: |
+          python -c "
+          from fastapi.testclient import TestClient
+          import main
+          with TestClient(main.app) as c:
+              assert c.get('/health').status_code == 200, 'health must stay public'
+              assert c.post('/audit/start', json={'code': 'contract C {}'}).status_code == 401, 'missing token must be rejected'
+              assert c.post('/audit/start', json={'code': 'contract C { function f() public {} }'},
+                            headers={'Authorization': 'Bearer ci-token'}).status_code == 200, 'valid token must be accepted'
+          print('API auth smoke test passed')
+          "
+        working-directory: gaolaif/backend
+        env:
+          SIREEN_API_TOKEN: ci-token
+
+      - name: Memory mode smoke test
+        run: |
+          python -c "
+          import os
+          os.environ['SIREEN_MEMORY_MODE'] = 'memory'
+          from memory.smart_memory import SmartMemory
+          m = SmartMemory(); m.init()
+          m.save('k', '[ABSTRACT] reentrancy pattern')
+          assert m.search('reentrancy'), 'memory mode must round-trip in process'
+          os.environ['SIREEN_MEMORY_MODE'] = 'off'
+          o = SmartMemory(); o.init()
+          o.save('k', 'x'); assert o.search('x') == [], 'off mode must store nothing'
+          print('Memory mode smoke test passed')
+          "
+        working-directory: gaolaif/backend
+
       - name: Check environment-variable handling
         run: python -c "import os; assert os.environ['SIREEN_QA_MARKER'] == 'cross-platform-safe'; print('Environment variable available')"
         working-directory: gaolaif/backend
@@ -151,6 +195,8 @@ jobs:
         run: python -m pip install pip-audit
 
       - name: Audit Python requirements
+        # `pip-audit` exits non-zero when any advisory matches, which is the
+        # signal we want. The JSON report is uploaded even on failure.
         run: pip-audit -r requirements.txt --format json --output ../../test-results/pip-audit.json
         working-directory: gaolaif/backend
 
@@ -159,7 +205,13 @@ jobs:
         working-directory: gaolaif/extension
 
       - name: Audit npm lockfile
-        run: npm audit --audit-level=low --json > ../../test-results/npm-audit.json
+        run: |
+          set +e
+          npm audit --audit-level=low --json > ../../test-results/npm-audit.json
+          code=$?
+          set -e
+          python -c "import json;d=json.load(open('../../test-results/npm-audit.json'));print('npm vulnerabilities:', d.get('metadata',{}).get('vulnerabilities',{}))"
+          exit $code
         working-directory: gaolaif/extension
 
       - name: Upload dependency audit reports

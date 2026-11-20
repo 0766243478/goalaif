@@ -29,6 +29,10 @@ class VerificationStatus(str, Enum):
     EXECUTION_FAILED = "execution_failed"
     NOT_REPRODUCED = "not_reproduced"
     NEEDS_REVIEW = "needs_review"
+    # The verifier itself was absent (no `forge` on PATH). Distinct from
+    # COMPILATION_FAILED: nothing was compiled, so reporting a compile failure
+    # would assert an event that never happened.
+    VERIFIER_UNAVAILABLE = "verifier_unavailable"
 
 
 class ErrorCategory(Enum):
@@ -270,6 +274,9 @@ class VerificationRecord:
     verifier_version: str = ""
     compile_status: str = "not_run"     # not_run|passed|failed
     test_status: str = "not_run"        # not_run|passed|failed|timeout|error|skipped
+    # Ladder rung reached by HonestSignal. Lets callers tell "compiler absent"
+    # apart from "compiler ran and failed" without re-deriving it.
+    verification_status: str = ""
     executed_test_count: int = 0
     relevant_test_name: str = ""
     relevant_test_passed: Optional[bool] = None

@@ -46,9 +46,18 @@ def _render_audit(audit: dict) -> None:
     if verification:
         print(f"POC             {'GENERATED' if evidence[0].get('poc_source') else 'UNAVAILABLE'}")
         print("FORGE")
+        verifier_absent = (
+            str(verification.get("verification_status", "")) == "verifier_unavailable"
+        )
         print(f"Version: {verification.get('verifier_version') or 'unavailable'}")
-        print(f"Compile: {str(verification.get('compile_status', 'not_run')).upper()}")
-        print(f"Test: {str(verification.get('test_status', 'not_run')).upper()}")
+        if verifier_absent:
+            # Nothing was compiled or executed. Printing FAILED would assert an
+            # event that never happened.
+            print("Compile: NOT RUN (forge unavailable)")
+            print("Test: NOT RUN (forge unavailable)")
+        else:
+            print(f"Compile: {str(verification.get('compile_status', 'not_run')).upper()}")
+            print(f"Test: {str(verification.get('test_status', 'not_run')).upper()}")
         print(f"Executed: {verification.get('executed_test_count', 0)}")
     else:
         print("POC             UNAVAILABLE")

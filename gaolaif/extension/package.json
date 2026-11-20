@@ -208,6 +208,11 @@
           "default": "",
           "description": "Python interpreter used to launch the Sireen backend. Leave empty to use 'python' from PATH."
         },
+        "gaolaif.apiToken": {
+          "type": "string",
+          "default": "",
+          "description": "Shared bearer token for the local Sireen backend. Leave empty to read it from SIREEN_API_TOKEN or ~/.sireen/api-token (written by the backend on first start)."
+        },
         "gaolaif.defaultRpcEvm": {
           "type": "string",
           "default": "https://eth.llamarpc.com"

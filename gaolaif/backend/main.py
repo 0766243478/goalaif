@@ -37,6 +37,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+import api_auth
 from llm.router import Router
 from models.types import (
     AuditSession, ProtocolMap, AttackScenario,
@@ -78,7 +79,20 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app):
+    global API_TOKEN
     session_init_db()  # SQLite session store
+    if api_auth.auth_disabled():
+        logging.getLogger("sireen.auth").warning(
+            "API authentication DISABLED (SIREEN_AUTH_DISABLED). "
+            "Any local process can drive this backend."
+        )
+    else:
+        API_TOKEN = api_auth.resolve_token()
+        logging.getLogger("sireen.auth").info(
+            "API token required; token source: %s",
+            "SIREEN_API_TOKEN" if os.environ.get(api_auth.ENV_TOKEN, "").strip()
+            else str(api_auth.token_file_path()),
+        )
     asyncio.create_task(asyncio.to_thread(memory.init))
     yield
 
@@ -110,6 +124,34 @@ async def limit_request_body(request, call_next):
         return JSONResponse(status_code=413, content={"error": "Request body too large"})
     response = await call_next(request)
     return response
+
+
+# ── Local API authentication ────────────────────────────────────────────────
+# Loopback is not an authorisation boundary: any local process can reach the
+# port. See api_auth.py for the token resolution order.
+API_TOKEN = ""
+
+
+@app.middleware("http")
+async def require_api_token(request, call_next):
+    """Require a bearer token on everything except /health and /config/status."""
+    if request.method == "OPTIONS":
+        # CORS preflight never carries credentials by design.
+        return await call_next(request)
+    if api_auth.auth_disabled() or api_auth.is_public_path(request.url.path):
+        return await call_next(request)
+
+    expected = API_TOKEN or api_auth.resolve_token()
+    presented = api_auth.extract_bearer(request.headers.get("authorization", ""))
+    if not api_auth.token_matches(presented, expected):
+        return JSONResponse(
+            status_code=401,
+            content={
+                "error": "Missing or invalid API token. Send "
+                         "'Authorization: Bearer <token>' (see ~/.sireen/api-token)."
+            },
+        )
+    return await call_next(request)
 
 
 def _reject_oversized_source(source_code: str):
@@ -543,9 +585,17 @@ def _verification_record_from_proof(proof: SimulationProof) -> VerificationRecor
     rec.duration_ms = float(proof.test_duration_ms or 0.0)
 
     if er is not None:
-        rec.compile_status = "passed" if er.compiled else (
-            "failed" if er.verification_status == VerificationStatus.COMPILATION_FAILED else "not_run"
-        )
+        vs = er.verification_status
+        rec.verification_status = getattr(vs, "value", str(vs or ""))
+        # VERIFIER_UNAVAILABLE means forge never ran. Reporting "failed" here
+        # would claim a compile that never happened.
+        verifier_absent = rec.verification_status == VerificationStatus.VERIFIER_UNAVAILABLE.value
+        if verifier_absent:
+            rec.compile_status = "not_run"
+        else:
+            rec.compile_status = "passed" if er.compiled else (
+                "failed" if vs == VerificationStatus.COMPILATION_FAILED else "not_run"
+            )
         rec.test_status = (
             "passed" if (er.executed and er.exploit_reproduced)
             else ("ran" if er.executed else "not_run")
@@ -564,15 +614,19 @@ def _verification_record_from_proof(proof: SimulationProof) -> VerificationRecor
     if "[SKIPPED]" in out:
         rec.compile_status = "not_run"
         rec.test_status = "not_run"
+        rec.verification_status = VerificationStatus.VERIFIER_UNAVAILABLE.value
     elif "[COMPILATION FAILED" in out:
         rec.compile_status = "failed"
         rec.test_status = "not_run"
+        rec.verification_status = VerificationStatus.COMPILATION_FAILED.value
     elif "[TIMEOUT]" in out:
         rec.compile_status = "passed"
         rec.test_status = "timeout"
+        rec.verification_status = VerificationStatus.EXECUTION_FAILED.value
     elif "[ERROR]" in out:
         rec.compile_status = "not_run"
         rec.test_status = "error"
+        rec.verification_status = VerificationStatus.NEEDS_REVIEW.value
     rec.stdout_excerpt = out[:2000]
     m = re.search(r"Workspace preserved at: (\S+)", out)
     if m:
@@ -1422,6 +1476,14 @@ async def _broadcast(session_id: str, event_type: str, payload: dict):
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
+    # Browsers cannot set headers on a WebSocket handshake, so the token
+    # travels as a query parameter here. Same policy as the HTTP middleware.
+    if not api_auth.auth_disabled():
+        presented = ws.query_params.get("token", "")
+        expected = API_TOKEN or api_auth.resolve_token()
+        if not api_auth.token_matches(presented, expected):
+            await ws.close(code=4401)
+            return
     conn_id = str(uuid.uuid4().hex[:12])
     active_connections[conn_id] = ws
     try:
@@ -2022,4 +2084,6 @@ async def config_status():
         "api_configured": router_llm.is_configured(),
         "forge_available": forge_available,
         "qdrant_available": memory._use_qdrant,
+        "memory_mode": memory.mode,
+        "auth_required": not api_auth.auth_disabled(),
     }

@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as cp from 'child_process';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import WebSocket from 'ws';
 import { EventEmitter } from 'events';
@@ -36,6 +37,7 @@ export class BackendClient extends EventEmitter {
   private reconnectAttempt: number = 0;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private isShuttingDown: boolean = false;
+  private apiToken: string = '';
 
   constructor(
     private context: vscode.ExtensionContext,
@@ -49,6 +51,38 @@ export class BackendClient extends EventEmitter {
 
   get connected(): boolean { return this._connected; }
   get connectionState(): ConnectionState { return this._connectionState; }
+
+  /**
+   * Read the backend's shared bearer token.
+   *
+   * Resolution mirrors the backend's own order (see api_auth.py): an explicit
+   * `gaolaif.apiToken` setting wins, then SIREEN_API_TOKEN, then the token file
+   * the backend writes on first start. The extension never generates a token —
+   * the backend owns it, so there is exactly one source of truth.
+   */
+  private resolveApiToken(): string {
+    const configured = vscode.workspace.getConfiguration('gaolaif').get<string>('apiToken', '');
+    if (configured && configured.trim()) return configured.trim();
+
+    const fromEnv = process.env.SIREEN_API_TOKEN;
+    if (fromEnv && fromEnv.trim()) return fromEnv.trim();
+
+    const tokenFile = process.env.SIREEN_TOKEN_FILE
+      ? process.env.SIREEN_TOKEN_FILE
+      : path.join(os.homedir(), '.sireen', 'api-token');
+    try {
+      const token = fs.readFileSync(tokenFile, 'utf8').trim();
+      if (token) return token;
+    } catch { /* backend has not started yet, or auth disabled */ }
+    return '';
+  }
+
+  private authHeaders(extra: Record<string, string> = {}): Record<string, string> {
+    if (!this.apiToken) this.apiToken = this.resolveApiToken();
+    return this.apiToken
+      ? { ...extra, Authorization: `Bearer ${this.apiToken}` }
+      : extra;
+  }
 
   private setConnectionState(state: ConnectionState): void {
     if (this._connectionState !== state) {
@@ -161,7 +195,9 @@ export class BackendClient extends EventEmitter {
     if (this.isShuttingDown) return;
 
     this.setConnectionState('connecting');
-    this.ws = new WebSocket(`ws://127.0.0.1:${this.port}/ws`);
+    if (!this.apiToken) this.apiToken = this.resolveApiToken();
+    const tokenQuery = this.apiToken ? `?token=${encodeURIComponent(this.apiToken)}` : '';
+    this.ws = new WebSocket(`ws://127.0.0.1:${this.port}/ws${tokenQuery}`);
 
     this.ws.on('open', () => {
       this._connected = true;
@@ -228,7 +264,7 @@ export class BackendClient extends EventEmitter {
   async post(endpoint: string, body: object): Promise<any> {
     const resp = await fetch(`http://127.0.0.1:${this.port}${endpoint}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(body),
     });
     if (!resp.ok) {
@@ -239,7 +275,9 @@ export class BackendClient extends EventEmitter {
   }
 
   async get(endpoint: string): Promise<any> {
-    const resp = await fetch(`http://127.0.0.1:${this.port}${endpoint}`);
+    const resp = await fetch(`http://127.0.0.1:${this.port}${endpoint}`, {
+      headers: this.authHeaders(),
+    });
     if (!resp.ok) throw new Error(`Backend GET ${endpoint} returned ${resp.status}`);
     return resp.json();
   }
@@ -247,7 +285,7 @@ export class BackendClient extends EventEmitter {
   async patch(endpoint: string, body: object): Promise<any> {
     const resp = await fetch(`http://127.0.0.1:${this.port}${endpoint}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(body),
     });
     if (!resp.ok) {
@@ -260,6 +298,7 @@ export class BackendClient extends EventEmitter {
   async delete(endpoint: string): Promise<any> {
     const resp = await fetch(`http://127.0.0.1:${this.port}${endpoint}`, {
       method: 'DELETE',
+      headers: this.authHeaders(),
     });
     if (!resp.ok) {
       const err = await resp.text().catch(() => 'Unknown error');
@@ -271,7 +310,7 @@ export class BackendClient extends EventEmitter {
   async put(endpoint: string, body: object): Promise<any> {
     const resp = await fetch(`http://127.0.0.1:${this.port}${endpoint}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(body),
     });
     if (!resp.ok) {
